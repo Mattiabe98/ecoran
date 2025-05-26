@@ -378,7 +378,7 @@ class PowerManager:
         except Exception: pass 
 
         try: 
-            self._run_command(["echo",str(clamped_tdp_uw),self.power_limit_uw_file],use_sudo_for_tee=True)
+            self._run_command(["echo",str(clamped_tdp_uw),self.power_limit_uw_file],use_sudo_for_tee=False)
             self.current_tdp_w = new_tdp_w
         except Exception as e: 
             print(f"E: Exception during _set_tdp_limit_w writing to TDP limit file: {e}")
