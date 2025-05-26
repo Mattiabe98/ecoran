@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: xapp-script
+data:
+  {{- $files := .Files }}
+  {{- range tuple "xapp.py" "script2.py" }}
+  {{ . }}: |-
+{{ $files.Get . | trim | indent 4 }}
+  {{- end }}

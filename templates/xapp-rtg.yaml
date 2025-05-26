@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: xapp-rtg
+data:
+  routes.rtg: |
+    newrt|start    
+    # Route from xApp to e2mgr (management)
+    rte|1080|e2mgr-service:3801    
+    # Route from xApp to e2term (termination) for data exchange
+    rte|1090|e2term-service:38000    
+    # Additional routes between e2mgr and e2term (you may not need these here unless it's relevant for xapp to act as a proxy)
+    rte|1100|e2mgr-service:3801
+    rte|1101|e2term-service:38000    
+    # Additional communication between xapp and other control or management services
+    rte|10020|e2mgr-service:3801
+    rte|10060|e2term-service:38000    
+    # Routes related to xapp interacting with submgr-service (for subscription or control)
+    rte|12011|submgr-service:4560;xapp-service:4560
+    rte|12050|submgr-service:4560;xapp-service:4560
+    rte|12012|submgr-service:4560;xapp-service:4560
+    rte|12021|submgr-service:4560;xapp-service:4560
+    rte|12022|submgr-service:4560;xapp-service:4560
+    rte|12041|submgr-service:4560;xapp-service:4560
+    rte|12042|submgr-service:4560;xapp-service:4560
+    rte|12050|submgr-service:4560;xapp-service:4560
+    rte|20000|submgr-service:4560;xapp-service:4560    
+    # Routes to handle requests from e2mgr (likely control or setup)
+    rte|12001|e2mgr-service:3801
+    rte|12002|e2term-service:38000
+    rte|12003|e2term-service:38000
+    rte|12040|e2term-service:38000    
+    # xapp-service specific route to itself (or in case you need self-service communication, if required)
+    rte|12041|xapp-service:4560
+    rte|12042|xapp-service:4560
+    newrt|end
