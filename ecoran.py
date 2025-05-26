@@ -198,12 +198,11 @@ class PowerManager:
                 if delta_tsc < 0: delta_tsc += (2**64)
 
                 if delta_tsc > 0:
-                    # Calculate with full precision.
-                    # Cap slightly above 100% just in case of minor MSR oddities,
-                    # but allow values like 99.99%
                     calculated_busy = 100.0 * delta_mperf / delta_tsc
-                    current_busy_percent = min(100.5, calculated_busy) # Cap at 100.5% to catch wild values but allow >100 slightly
-                                                                      # Or remove min cap entirely if you trust MSR ratio
+                    # Strict cap at 100.0% for C0 residency.
+                    # If calculated_busy is e.g. 100.00001, it becomes 100.0.
+                    # If it's 99.9999, it remains ~99.9999 (Python float precision).
+                    current_busy_percent = min(100.0, calculated_busy) 
                 else: 
                     current_busy_percent = prev_data.busy_percent 
             else: 
