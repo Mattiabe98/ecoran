@@ -198,7 +198,12 @@ class PowerManager:
                 if delta_tsc < 0: delta_tsc += (2**64)
 
                 if delta_tsc > 0:
-                    current_busy_percent = min(100.0, 100.0 * delta_mperf / delta_tsc)
+                    # Calculate with full precision.
+                    # Cap slightly above 100% just in case of minor MSR oddities,
+                    # but allow values like 99.99%
+                    calculated_busy = 100.0 * delta_mperf / delta_tsc
+                    current_busy_percent = min(100.5, calculated_busy) # Cap at 100.5% to catch wild values but allow >100 slightly
+                                                                      # Or remove min cap entirely if you trust MSR ratio
                 else: 
                     current_busy_percent = prev_data.busy_percent 
             else: 
@@ -470,17 +475,16 @@ class PowerManager:
         
         self.last_tdp_adjustment_time = time.monotonic()
         last_print_time = time.monotonic()
-
         print(f"\n--- Starting Monitoring Loop ({'DRY RUN' if self.dry_run else 'LIVE RUN'}) ---")
-        print(f"Target MAX RU CPU (MSR-based): {self.target_ru_cpu_usage}% | RU Cores Monitored: {self.ru_timing_core_indices if self.ru_timing_core_indices else 'NONE'}")
+        print(f"Target MAX RU CPU (MSR-based): {self.target_ru_cpu_usage:.2f}% | RU Cores Monitored: {self.ru_timing_core_indices if self.ru_timing_core_indices else 'NONE'}") # Display target with more precision
         print(f"TDP Update Interval: {self.tdp_update_interval_s}s | Print Interval: {self.print_interval_s}s")
         print(f"TDP Range: {self.tdp_min_w}W - {self.tdp_max_w}W")
-        print(f"TDP Adjust: Sens={self.tdp_adj_sensitivity_factor*100:.1f}%, SmallStep={self.tdp_adj_step_w_small}W, LargeStep={self.tdp_adj_step_w_large}W, FarFactor={self.adaptive_step_far_thresh_factor}")
+        print(f"TDP Adjust: Sens={self.tdp_adj_sensitivity_factor*100:.2f}%, SmallStep={self.tdp_adj_step_w_small}W, LargeStep={self.tdp_adj_step_w_large}W, FarFactor={self.adaptive_step_far_thresh_factor}")
         print(f"CPU Max Samples: {self.max_samples_cpu_avg}")
-
 
         try:
             while True:
+                # ... (loop_start_time, MSR update, control value calculation remain the same) ...
                 loop_start_time = time.monotonic()
                 
                 if self.ru_timing_core_indices: 
@@ -499,20 +503,23 @@ class PowerManager:
                     ru_core_usage_details_list = []
                     for core_idx in self.ru_timing_core_indices:
                         data = self.ru_core_msr_prev_data.get(core_idx) 
-                        usage_str = f"{data.busy_percent:>5.1f}%" if data and data.busy_percent is not None else " N/A " # Pad N/A
+                        # Format busy_percent to 2 decimal places for logging
+                        usage_str = f"{data.busy_percent:>6.2f}%" if data and data.busy_percent is not None else " N/A  " # Pad N/A to match width
                         ru_core_usage_details_list.append(f"C{core_idx}:{usage_str}")
                     ru_core_details_str = ", ".join(ru_core_usage_details_list) if ru_core_usage_details_list else "N/A"
 
                     pkg_power_str = f"{pkg_power_w:.1f}" if pkg_power_ok else "N/A"
                     log_msg = (
                         f"{time.strftime('%H:%M:%S')} | "
-                        f"RU_Cores(MSR): [{ru_core_details_str}] (S_MaxCtrl:{control_value_for_tdp:>5.1f}%) | "
+                        # Format control_value_for_tdp to 2 decimal places
+                        f"RU_Cores(MSR): [{ru_core_details_str}] (S_MaxCtrl:{control_value_for_tdp:>6.2f}%) | " 
                         f"TDP:{self.current_tdp_w:>5.1f}W | "
                         f"PkgPwr:{pkg_power_str:>7}W" 
                     )
                     print(log_msg)
                     last_print_time = current_time
 
+                # ... (loop_duration, sleep, except, finally remain the same) ...
                 loop_duration = time.monotonic() - loop_start_time
                 sleep_time = max(0, 1.0 - loop_duration) 
                 time.sleep(sleep_time)
