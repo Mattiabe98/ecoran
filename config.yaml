@@ -46,7 +46,7 @@ tdp_range:
 # Target CPU utilization percentage for the *average* of all 'ru_timing_cores'.
 # The TDP adjustment algorithm aims to keep the average RU core busy % around this value.
 # Typically, for real-time cores, this is set high (e.g., 90-98%).
-target_ru_timing_cpu_usage: 99.90
+target_ru_timing_cpu_usage: 99.5
 
 # Interval (in seconds) at which the TDP adjustment logic runs.
 # The main monitoring loop collects CPU data every ~1 second for averaging,
