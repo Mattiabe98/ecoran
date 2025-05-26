@@ -10,12 +10,6 @@ RUN apt-get update && \
 # Set the working directory in the container
 WORKDIR /opt/ecoran/
 
-# Copy the requirements file first to leverage Docker cache
-COPY requirements.txt .
-
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-    # Clean up build dependencies
 
 # Copy Intel Speed Select binary
 COPY intel-speed-select /usr/bin/
