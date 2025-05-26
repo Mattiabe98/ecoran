@@ -20,7 +20,6 @@ RUN pip install --no-cache-dir -r requirements.txt && \
     apk del .build-deps
 
 # Copy the application code into the container
-COPY ecoran.py .
 
 # Copy Intel Speed Select binary
 COPY intel-speed-select /usr/bin/
