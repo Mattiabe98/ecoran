@@ -21,9 +21,14 @@ spec:
           volumeMounts:
             - mountPath: /mnt/data  # Mount path inside the container
               name: storage
+            - name: ecoran-config
+              mountPath: /opt/ecoran/
           stdin: true
           tty: true
       volumes:
         - name: storage
           persistentVolumeClaim:
             claimName: local-pvc  # This should match your PVC name
+        - name: ecoran-config
+          configMap:
+            name: ecoran-config
