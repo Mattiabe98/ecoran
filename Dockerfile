@@ -14,4 +14,4 @@ WORKDIR /opt/ecoran/
 # Copy Intel Speed Select binary
 COPY intel-speed-select /usr/bin/
 
-ENTRYPOINT ["python3", "ecoran.py"]
+ENTRYPOINT ["python3", "ecoran.py", "config.yaml"]
