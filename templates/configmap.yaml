@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: ecoran-script
+  name: ecoran-config
 data:
   {{- $files := .Files }}
-  {{- range tuple "ecoran.py" "config.yaml" }}
+  {{- range tuple "config.yaml" }}
   {{ . }}: |-
 {{ $files.Get . | trim | indent 4 }}
   {{- end }}
