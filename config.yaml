@@ -46,7 +46,7 @@ tdp_range:
 # Target CPU utilization percentage for the *average* of all 'ru_timing_cores'.
 # The TDP adjustment algorithm aims to keep the average RU core busy % around this value.
 # Typically, for real-time cores, this is set high (e.g., 90-98%).
-target_ru_timing_cpu_usage: 98
+target_ru_timing_cpu_usage: 99.90
 
 # Interval (in seconds) at which the TDP adjustment logic runs.
 # The main monitoring loop collects CPU data every ~1 second for averaging,
@@ -63,7 +63,7 @@ tdp_update_interval_s: 1 # e.g., adjust TDP every 2 seconds
 # Value must be between 0.0 and 1.0 (exclusive of 0).
 # Example: target=95%, sensitivity=0.03. Deadband is 95% +/- (95*0.03) = 95% +/- 2.85%.
 # Adjustments occur if average RU usage is outside ~92.15% - 97.85%.
-tdp_adjustment_sensitivity: 0.02
+tdp_adjustment_sensitivity: 0.0005
 
 # Small Step (Watts): TDP adjustment step size when average RU CPU usage is
 # close to the target (but outside the sensitivity deadband).
@@ -73,7 +73,7 @@ tdp_adjustment_step_w_small: 1
 # Large Step (Watts): TDP adjustment step size when average RU CPU usage is
 # far from the target. For quicker reaction to large deviations.
 # Must be positive. Typically >= tdp_adjustment_step_w_small.
-tdp_adjustment_step_w_large: 5
+tdp_adjustment_step_w_large: 3
 
 # Adaptive Step - Far Threshold Factor: A multiplier for the sensitivity threshold
 # to determine "far" from target.
@@ -123,7 +123,7 @@ clos_min_frequency:
 # TDP changes) it *would* execute but will NOT actually execute them.
 # CPU usage and package power will still be read for simulation.
 # Set to 'false' for live operation.
-dry_run: true
+dry_run: false
 
 # Path to the 'intel-speed-select' utility if it's not in the system's standard PATH.
 intel_speed_select_path: "intel-speed-select" # or e.g., "/usr/sbin/intel-speed-select"
