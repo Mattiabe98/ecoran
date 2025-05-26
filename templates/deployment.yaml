@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: ecoran
-          image: "docker.io/boing7898/ric-plt-xapp-frame-py:latest"
+          image: "docker.io/boing7898/ecoran:latest"
           imagePullPolicy: IfNotPresent
           volumeMounts:
             - mountPath: /mnt/data  # Mount path inside the container
