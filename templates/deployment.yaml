@@ -18,8 +18,8 @@ spec:
         - name: ecoran
           image: "docker.io/boing7898/ecoran:latest"
           imagePullPolicy: Always
-          command: ["sleep"]
-          args: ["infinity"]
+          # command: ["sleep"]
+          # args: ["infinity"]
           volumeMounts:
             - mountPath: /mnt/data
               name: storage
