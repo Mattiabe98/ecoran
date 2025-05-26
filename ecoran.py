@@ -123,22 +123,37 @@ class PowerManager:
 
 
     def _setup_intel_sst(self):
-        # ... (same, respects self.dry_run)
+        # ... (try block remains the same) ...
         print("--- Configuring Intel SST-CP ---")
         try:
             self._run_command(["intel-speed-select", "core-power", "enable"])
+            # ... (rest of the try block for SST setup commands) ...
+            # Example from previous code:
             clos_min_freqs = self.config.get('clos_min_frequency', {})
-            for clos_id, min_freq in clos_min_freqs.items(): self._run_command(["intel-speed-select", "core-power", "config", "-c", str(clos_id), "--min", str(min_freq)])
-            ran_component_cores: Dict[str, List[int]] = { name: self._parse_core_list_string(cs) for name, cs in self.config.get('ran_cores', {}).items() }
-            clos_associations = self.config.get('clos_association', {}); processed_clos_associations = {int(k): v for k,v in clos_associations.items()}
+            for clos_id, min_freq in clos_min_freqs.items():
+                self._run_command(["intel-speed-select", "core-power", "config", "-c", str(clos_id), "--min", str(min_freq)])
+
+            ran_component_cores: Dict[str, List[int]] = {
+                name: self._parse_core_list_string(core_str)
+                for name, core_str in self.config.get('ran_cores', {}).items()
+            }
+
+            clos_associations = self.config.get('clos_association', {})
+            processed_clos_associations = {int(k): v for k, v in clos_associations.items()}
+
             for clos_id_int, ran_components in processed_clos_associations.items():
                 associated_cores: Set[int] = set()
                 for comp_name in ran_components:
-                    if comp_name in ran_component_cores: associated_cores.update(ran_component_cores[comp_name])
-                    else: print(f"W: RAN comp '{comp_name}' for CLOS {clos_id_int} not in 'ran_cores'.")
+                    if comp_name in ran_component_cores:
+                        associated_cores.update(ran_component_cores[comp_name])
+                    else:
+                        print(f"W: RAN comp '{comp_name}' for CLOS {clos_id_int} not in 'ran_cores'.")
+                
                 if clos_id_int == 0 and self.ru_timing_core_indices:
-                    if not associated_cores.issuperset(self.ru_timing_core_indices): print(f"INFO: Ensuring RU_Timing cores {self.ru_timing_core_indices} are in CLOS 0.")
+                    if not associated_cores.issuperset(self.ru_timing_core_indices): 
+                         print(f"INFO: Ensuring RU_Timing cores {self.ru_timing_core_indices} are in CLOS 0.")
                     associated_cores.update(self.ru_timing_core_indices)
+                
                 if associated_cores:
                     core_list_str = ",".join(map(str, sorted(list(associated_cores))))
                     self._run_command(["intel-speed-select", "-c", core_list_str, "core-power", "assoc", "-c", str(clos_id_int)])
@@ -146,11 +161,17 @@ class PowerManager:
                     core_list_str = ",".join(map(str, sorted(list(self.ru_timing_core_indices))))
                     print(f"INFO: Assigning only RU_Timing cores {core_list_str} to CLOS 0.")
                     self._run_command(["intel-speed-select", "-c", core_list_str, "core-power", "assoc", "-c", str(clos_id_int)])
-                else: print(f"W: No cores to associate with CLOS {clos_id_int}.")
+                else:
+                    print(f"W: No cores to associate with CLOS {clos_id_int}.")
+            
             print("--- Intel SST-CP Configuration Complete ---")
-        except Exception as e: print(f"An error during Intel SST-CP setup: {e}");
-            if not self.dry_run: sys.exit(1)
-            else: print("[DRY RUN] SST-CP setup would have failed.")
+        except Exception as e:
+            print(f"An error occurred during Intel SST-CP setup: {e}") # This line is fine
+            # The following lines were problematic, correct indentation:
+            if not self.dry_run:
+                sys.exit(1) # Exit if not a dry run
+            else:
+                print("[DRY RUN] SST-CP setup would have failed due to the above error.")
 
 
     def _get_cpu_usages(self) -> List[float]:
