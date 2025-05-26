@@ -9,7 +9,7 @@ WORKDIR /opt/ecoran/
 # - yaml-dev is needed for PyYAML to compile its C extensions
 # We'll remove build-base after to keep the image small
 RUN apk add --no-cache --virtual .build-deps build-base yaml-dev && \
-    apk add --no-cache libffi-dev nano # libffi-dev might be needed by PyYAML's C extensions on some platforms
+    apk add --no-cache libffi-dev nano procps # libffi-dev might be needed by PyYAML's C extensions on some platforms
 
 # Copy the requirements file first to leverage Docker cache
 COPY requirements.txt .
