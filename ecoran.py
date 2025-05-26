@@ -234,26 +234,20 @@ class PowerManager:
         
         return sum(self.max_ru_timing_usage_history) / len(self.max_ru_timing_usage_history) if self.max_ru_timing_usage_history else 0.0
 
-    def _run_command(self, cmd_list: List[str], use_sudo_for_tee: bool = False) -> None:
+    def _run_command(self, cmd_list: List[str]) -> None: # Removed use_sudo_for_tee
+        """Executes a command. Assumes sufficient privileges for the command itself."""
         actual_cmd_list_or_str: Any
-        shell_needed = False
+        shell_needed = False # Generally avoid shell=True unless absolutely necessary
         print_cmd_str: str
 
+        # This function is now primarily for intel-speed-select
         if cmd_list[0] == "intel-speed-select": 
             actual_cmd_list_or_str = [self.intel_sst_path] + cmd_list[1:]
             print_cmd_str = ' '.join(actual_cmd_list_or_str)
-        elif use_sudo_for_tee and cmd_list[0] == 'echo' and len(cmd_list) == 3: # echo VAL FILE
-            val_to_echo, target_file = cmd_list[1], cmd_list[2]
-            # Basic check for safety, allow ':' for intel-rapl:X in path
-            if not (all(c.isalnum() or c in ['-', '_', '.', '/', ':'] for c in target_file) and val_to_echo.isdigit()):
-                err_msg = f"Invalid characters or format in echo/tee command: echo {val_to_echo} | sudo tee {target_file}"
-                print(f"E: {err_msg}")
-                if not self.dry_run: raise ValueError(err_msg) # Still raise if not dry_run
-                return 
-            actual_cmd_list_or_str = f"echo {val_to_echo} | sudo tee {target_file}"
-            shell_needed = True
-            print_cmd_str = actual_cmd_list_or_str
+        # Removed the special 'echo | sudo tee' case
+        # If other general commands were needed, they could be added here.
         else: 
+            # For any other generic command we might want to run (currently none other than sst-select)
             actual_cmd_list_or_str = cmd_list
             print_cmd_str = ' '.join(actual_cmd_list_or_str)
         
@@ -261,23 +255,21 @@ class PowerManager:
             print(f"[DRY RUN] Would execute: {print_cmd_str}")
             return
         
-        # For actual execution:
         print(f"Executing: {print_cmd_str}")
         try: 
+            # Pass the list of arguments directly to subprocess.run
             subprocess.run(actual_cmd_list_or_str, shell=shell_needed, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as e:
-            cmd_executed = e.cmd if isinstance(e.cmd, str) else ' '.join(e.cmd)
+            cmd_executed = e.cmd if isinstance(e.cmd, str) else ' '.join(e.cmd) # e.cmd can be list or string
             print(f"E: Command '{cmd_executed}' failed with exit code {e.returncode}.")
             if e.stdout: print(f"   STDOUT: {e.stdout.strip()}")
             if e.stderr: print(f"   STDERR: {e.stderr.strip()}")
-            # Do not raise if dry_run, as it's already handled. If not dry_run, this implies a real failure.
             if not self.dry_run: raise 
         except FileNotFoundError:
-            # Extract the command name that was not found
             cmd_name_failed = actual_cmd_list_or_str
             if isinstance(actual_cmd_list_or_str, list):
                 cmd_name_failed = actual_cmd_list_or_str[0]
-            elif isinstance(actual_cmd_list_or_str, str): # For shell=True commands
+            elif isinstance(actual_cmd_list_or_str, str): 
                 cmd_name_failed = actual_cmd_list_or_str.split()[0]
             print(f"E: Command '{cmd_name_failed}' not found. Is it installed and in PATH?")
             if not self.dry_run: raise 
@@ -356,7 +348,7 @@ class PowerManager:
             return self.tdp_min_w
 
     def _set_tdp_limit_w(self, tdp_watts: float):
-        target_tdp_uw = int(tdp_watts*1e6)
+        target_tdp_uw = int(tdp_watts*1e6) # Convert Watts to microWatts
         min_tdp_uw_config=int(self.tdp_min_w*1e6)
         max_tdp_uw_config=int(self.tdp_max_w*1e6)
         
@@ -366,23 +358,37 @@ class PowerManager:
         if self.dry_run:
             if abs(self.current_tdp_w - new_tdp_w) > 0.01 : 
                  print(f"[DRY RUN] Would set TDP to {new_tdp_w:.1f}W (requested {tdp_watts:.1f}W, current sim TDP {self.current_tdp_w:.1f}W)")
-            self.current_tdp_w = new_tdp_w 
+            self.current_tdp_w = new_tdp_w # Update simulated TDP
             return
 
+        # Actual run: Write directly to the sysfs file
         try: 
-            with open(self.power_limit_uw_file, 'r') as f:
-                if int(f.read().strip()) == clamped_tdp_uw:
-                    if abs(self.current_tdp_w - new_tdp_w) > 0.01: 
+            # Check if already at target to avoid unnecessary writes
+            # This also helps confirm the file is writable before attempting the actual write.
+            with open(self.power_limit_uw_file, 'r') as f_read:
+                if int(f_read.read().strip()) == clamped_tdp_uw:
+                    if abs(self.current_tdp_w - new_tdp_w) > 0.01: # Update our internal state if it drifted
                         self.current_tdp_w = new_tdp_w
-                    return 
-        except Exception: pass 
+                    return # Already at the target value
+        except Exception as e_read:
+            # If reading fails, we might still want to try writing, but log a warning.
+            # This could happen if the file permissions are strange (e.g. write-only, which is unlikely for sysfs).
+            print(f"W: Could not read {self.power_limit_uw_file} before writing (error: {e_read}). Proceeding with write attempt.")
+            pass 
 
         try: 
-            self._run_command(["echo",str(clamped_tdp_uw),self.power_limit_uw_file],use_sudo_for_tee=False)
+            print(f"Setting TDP: Writing {clamped_tdp_uw} to {self.power_limit_uw_file}")
+            with open(self.power_limit_uw_file, 'w') as f_write:
+                f_write.write(str(clamped_tdp_uw))
             self.current_tdp_w = new_tdp_w
-        except Exception as e: 
-            print(f"E: Exception during _set_tdp_limit_w writing to TDP limit file: {e}")
+        except OSError as e_os: 
+            # This will catch PermissionError if not root, or other OS issues.
+            print(f"E: OSError writing TDP value {clamped_tdp_uw} to {self.power_limit_uw_file}: {e_os}")
+            # If not dry_run, this is a critical failure.
             if not self.dry_run: raise 
+        except Exception as e_exc: # Catch any other unexpected errors
+            print(f"E: Unexpected exception writing TDP value {clamped_tdp_uw} to {self.power_limit_uw_file}: {e_exc}")
+            if not self.dry_run: raise
 
     def _adjust_tdp(self, control_ru_cpu_usage: float):
         error_percent = self.target_ru_cpu_usage - control_ru_cpu_usage 
