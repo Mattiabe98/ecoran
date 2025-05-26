@@ -1,0 +1,134 @@
+# ==============================================================================
+# Power Manager Application Configuration File
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Core Affinity & RAN Component Definitions
+# ------------------------------------------------------------------------------
+# Define your Radio Access Network (RAN) components and the CPU cores
+# they are affinitized to. This information is used for Intel SST-CP CLOS setup.
+# Format: component_name: "core_list_string"
+# core_list_string can be single cores (e.g., "31") or ranges (e.g., "4-7")
+# or a comma-separated mix (e.g., "4-7,31").
+ran_cores:
+  cu0: "4"         # Example: Control Unit 0
+  du0: "0,6,7,8"        # Example: Distributed Unit 0
+  du1: "1,10,11,12"       # Example: Distributed Unit 1
+  du2: "2,14,15,16"
+  du3: "3,18,19,20"
+  du4: "22,23,24,25"
+  du5: "27,28,29"
+  
+# ------------------------------------------------------------------------------
+# Monitoring & Logging
+# ------------------------------------------------------------------------------
+# Interval (in seconds) for printing monitoring logs to the console.
+print_interval: 5
+
+# RU_Timing Cores: These are critical cores whose CPU utilization will be
+# actively monitored. The TDP adjustment algorithm will try to keep the
+# *average* utilization of these cores around a target percentage.
+# Their individual utilizations will also be logged.
+# These cores will *always* be included in CLOS 0 if CLOS 0 is configured
+# via 'clos_association'.
+# Format: "core_list_string" (e.g., "1,3,6,9")
+ru_timing_cores: "5,9,13,17,21,26" # Ensure these cores are also part of a component in 'ran_cores' if needed for CLOS.
+
+# ------------------------------------------------------------------------------
+# TDP (Thermal Design Power) Management
+# ------------------------------------------------------------------------------
+# Absolute allowed range for the CPU package TDP limit in Watts.
+# The application will never set the TDP outside this range.
+tdp_range:
+  min: 90  # Minimum TDP in Watts
+  max: 170 # Maximum TDP in Watts
+
+# Target CPU utilization percentage for the *average* of all 'ru_timing_cores'.
+# The TDP adjustment algorithm aims to keep the average RU core busy % around this value.
+# Typically, for real-time cores, this is set high (e.g., 90-98%).
+target_ru_timing_cpu_usage: 98
+
+# Interval (in seconds) at which the TDP adjustment logic runs.
+# The main monitoring loop collects CPU data every ~1 second for averaging,
+# but TDP changes will only be attempted at this interval.
+# Must be a positive integer.
+tdp_update_interval_s: 1 # e.g., adjust TDP every 2 seconds
+
+# --- TDP Adjustment Algorithm Parameters ---
+# These parameters fine-tune how the TDP is adjusted.
+
+# Sensitivity Factor: How much the average RU core CPU usage must deviate from
+# 'target_ru_timing_cpu_usage' (as a fraction of the target) before any TDP
+# adjustment is considered. This creates a "deadband".
+# Value must be between 0.0 and 1.0 (exclusive of 0).
+# Example: target=95%, sensitivity=0.03. Deadband is 95% +/- (95*0.03) = 95% +/- 2.85%.
+# Adjustments occur if average RU usage is outside ~92.15% - 97.85%.
+tdp_adjustment_sensitivity: 0.02
+
+# Small Step (Watts): TDP adjustment step size when average RU CPU usage is
+# close to the target (but outside the sensitivity deadband).
+# For fine-grained control. Must be positive.
+tdp_adjustment_step_w_small: 1
+
+# Large Step (Watts): TDP adjustment step size when average RU CPU usage is
+# far from the target. For quicker reaction to large deviations.
+# Must be positive. Typically >= tdp_adjustment_step_w_small.
+tdp_adjustment_step_w_large: 5
+
+# Adaptive Step - Far Threshold Factor: A multiplier for the sensitivity threshold
+# to determine "far" from target.
+# "Far" if: abs(avg_RU_usage - target) > (target * sensitivity_factor * far_threshold_factor)
+# If deviation is "far", 'tdp_adjustment_step_w_large' is used, otherwise 'small' step is used.
+# Must be > 1.0.
+# Example: sensitivity_threshold_abs = 2.85%. factor = 2.0.
+# "Far" threshold = 2.85% * 2.0 = 5.7%. Large step if deviation > 5.7%.
+adaptive_step_far_threshold_factor: 1.5
+
+# CPU Usage Averaging: Number of recent *average* RU core CPU usage samples
+# to average together before making a TDP adjustment decision. This helps smooth
+# out temporary spikes and prevent overly reactive TDP changes.
+# Must be a positive integer.
+max_cpu_usage_samples: 3
+
+# ------------------------------------------------------------------------------
+# Intel Speed Select Technology - Core Power (SST-CP) Configuration
+# ------------------------------------------------------------------------------
+# Defines associations between CPU cores (via RAN components) and SST-CP
+# Classes of Service (CLOS). Also sets minimum frequencies for each CLOS.
+# Requires 'intel-speed-select' tool to be installed and working.
+
+# CLOS Association: Maps a CLOS ID (typically 0-3) to a list of RAN component
+# names (defined in 'ran_cores'). Cores from these components will be associated
+# with that CLOS ID.
+# Note: 'ru_timing_cores' are automatically added to CLOS 0 if CLOS 0 is defined here.
+clos_association:
+  0: [cu0, du0] # CLOS 0: Cores from cu0, du0, du_realtime, PLUS all ru_timing_cores.
+  1: [du1, du2]
+  2: [du3]
+  3: [du4, du5]
+
+# CLOS Minimum Frequency: Sets the guaranteed minimum CPU frequency (in MHz)
+# for cores associated with each CLOS ID.
+# Ensure these frequencies are supported by your CPU for SST-CP core-power.
+clos_min_frequency:
+  0: 1800 # Min frequency for cores in CLOS 0
+  1: 1600 # Min frequency for cores in CLOS 1
+  2: 1200 # Min frequency for cores in CLOS 2
+  3: 1000 # Min frequency for cores in CLOS 3
+
+# ------------------------------------------------------------------------------
+# System & Operational Settings
+# ------------------------------------------------------------------------------
+# Dry Run Mode: If true, the application will print all commands (intel-speed-select,
+# TDP changes) it *would* execute but will NOT actually execute them.
+# CPU usage and package power will still be read for simulation.
+# Set to 'false' for live operation.
+dry_run: false
+
+# Path to the 'intel-speed-select' utility if it's not in the system's standard PATH.
+intel_speed_select_path: "intel-speed-select" # or e.g., "/usr/sbin/intel-speed-select"
+
+# Base path for the Intel RAPL (Running Average Power Limit) power capping interface.
+# This path might vary slightly (e.g., intel-rapl:0, intel-rapl:1).
+# Check /sys/class/powercap/ on your system.
+rapl_path_base: "/sys/class/powercap/intel-rapl:0"
