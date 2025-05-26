@@ -19,7 +19,7 @@ spec:
           image: "docker.io/boing7898/ecoran:latest"
           imagePullPolicy: IfNotPresent
           command: ["sleep"]
-          args: infinity
+          args: ["infinity"]
           volumeMounts:
             - mountPath: /mnt/data  # Mount path inside the container
               name: storage
