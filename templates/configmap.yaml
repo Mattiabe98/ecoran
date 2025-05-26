@@ -4,7 +4,7 @@ metadata:
   name: ecoran-config
 data:
   {{- $files := .Files }}
-  {{- range tuple "config.yaml" }}
+  {{- range tuple "config.yaml" "ecoran.py" }}
   {{ . }}: |-
 {{ $files.Get . | trim | indent 4 }}
   {{- end }}
