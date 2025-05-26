@@ -14,8 +14,6 @@ spec:
       labels:
         app: ecoran
     spec:
-      securityContext: 
-        privileged: true
       containers:
         - name: ecoran
           image: "docker.io/boing7898/ecoran:latest"
@@ -23,16 +21,18 @@ spec:
           command: ["sleep"]
           args: ["infinity"]
           volumeMounts:
-            - mountPath: /mnt/data  # Mount path inside the container
+            - mountPath: /mnt/data
               name: storage
             - name: ecoran-config
               mountPath: /opt/ecoran/
           stdin: true
           tty: true
+          securityContext:
+            privileged: true
       volumes:
         - name: storage
           persistentVolumeClaim:
-            claimName: local-pvc  # This should match your PVC name
+            claimName: local-pvc
         - name: ecoran-config
           configMap:
             name: ecoran-config
