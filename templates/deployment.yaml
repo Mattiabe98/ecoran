@@ -23,8 +23,7 @@ spec:
             - mountPath: /mnt/data  # Mount path inside the container
               name: storage
             - name: ecoran-config
-              mountPath: /opt/ecoran/
-              subPath: config.yaml
+              mountPath: /opt/ecoran/config/
           stdin: true
           tty: true
       volumes:
