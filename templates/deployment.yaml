@@ -18,6 +18,7 @@ spec:
         - name: ecoran
           image: "docker.io/boing7898/ecoran:latest"
           imagePullPolicy: IfNotPresent
+          command: sleep infinity
           volumeMounts:
             - mountPath: /mnt/data  # Mount path inside the container
               name: storage
