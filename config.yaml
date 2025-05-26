@@ -123,7 +123,7 @@ clos_min_frequency:
 # TDP changes) it *would* execute but will NOT actually execute them.
 # CPU usage and package power will still be read for simulation.
 # Set to 'false' for live operation.
-dry_run: false
+dry_run: true
 
 # Path to the 'intel-speed-select' utility if it's not in the system's standard PATH.
 intel_speed_select_path: "intel-speed-select" # or e.g., "/usr/sbin/intel-speed-select"
