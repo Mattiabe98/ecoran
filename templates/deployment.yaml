@@ -3,39 +3,27 @@ kind: Deployment
 metadata:
   name: {{ .Release.Name }}-deployment
   labels:
-    app: python_xapp_runner
+    app: ecoran
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app: python_xapp_runner
+      app: ecoran
   template:
     metadata:
       labels:
-        app: python_xapp_runner
+        app: ecoran
     spec:
       containers:
-        - name: python-xapp-runner
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          ports:
-            - containerPort: {{ .Values.service.port }}
-          command: [ "/bin/sh", "-c" ]
-          args:
-            - mkdir /tmp/xApp;
-              cp -RL /opt/xApps/files/* /tmp/xApp/;
-              cp -RL /opt/xApps/lib /tmp/xApp/;
-              sleep 1000;
-          env:
-            {{- range $key, $value := .Values.env }}
-            - name: {{ $key }}
-              value: "{{ $value }}"
-            {{- end }}
+        - name: ecoran
+          image: "docker.io/boing7898/ric-plt-xapp-frame-py:latest"
+          imagePullPolicy: IfNotPresent
           volumeMounts:
-            {{- toYaml .Values.volumeMounts | nindent 12 }}
-          resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            - mountPath: /mnt/data  # Mount path inside the container
+              name: storage
           stdin: true
           tty: true
       volumes:
-        {{- toYaml .Values.volumes | nindent 8 }}
+        - name: storage
+          persistentVolumeClaim:
+            claimName: local-pvc  # This should match your PVC name
