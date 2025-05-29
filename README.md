@@ -1,7 +1,30 @@
 # EcoRAN
 This script is a starting point for a framework to reduce power consumption in a multi-tenant, neutral host vRAN deployment.
 
-Requirements:
+## CPU Power Optimization Parameters
+
+The framework utilizes two main power management parameters for CPU power optimization:
+
+### 1. Dynamic CPU Power Limit (TDP) Adjustment
+
+Modern Intel Xeon processors expose RAPL (Running Average Power Limit) interfaces, allowing software control over package power limits.  
+The framework focuses on the `constraint_0_power_limit_uw` parameter (long-term power limit, PL1). Adjusting PL1 dynamically allows the system to cap the CPU’s sustained power consumption.
+
+This method proved more effective and stable than direct frequency scaling, as the CPU’s internal power management can make faster and finer-grained decisions to stay within the given power budget.
+
+### 2. Intel Speed Select Technology - Core Power (SST-CP)
+
+SST-CP enables the creation of up to four Classes of Service (CLOS), to which physical CPU cores can be assigned.  
+Cores in higher-priority CLOS (with CLOS 0 being the highest) receive preferential power allocation when the CPU reaches its power limit.  
+Additionally, a minimum frequency can be set per CLOS.
+
+This is ideal for a multi-tenant, cost-based deployment scenario:
+
+- Tenants can be mapped to different CLOS based on their service tier (e.g., Platinum, Gold, Silver, Bronze → CLOS 0, 1, 2, 3).
+- Critical RAN threads (e.g., `srsRAN`'s `ru_timing`) can be assigned to a high-priority CLOS and pinned to dedicated physical cores to ensure stability and low latency, even under power constraints.
+
+
+## Requirements:
 - A CPU that supports Intel SST-CP
 - A srsRAN 7.2 O-RU deployment (or similar 7.2 gNB with dedicated O-RU timing core)
 - A Kubernetes cluster
