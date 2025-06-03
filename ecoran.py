@@ -54,7 +54,7 @@ class CoreMSRData:
         self.busy_percent: float = 0.0
 
 class PowerManager(xAppBase):
-    MAX_VOLUME_COUNTER_BYTES = (2**32) - 1 # Adjust if your counter size is different (e.g., 2**64 - 1)
+    MAX_VOLUME_COUNTER_BYTES = (2**64) - 1 # Adjust if your counter size is different (e.g., 2**64 - 1)
 
     def __init__(self, config_path: str, http_server_port: int, rmr_port: int, kpm_ran_func_id: int = 2):
         self.config_path = config_path
