@@ -456,7 +456,7 @@ class PowerManager(xAppBase):
                     
                     dl_b, ul_b = sum(d.get('dl_bits',0.0) for d in kpm_snapshot.values()), sum(d.get('ul_bits',0.0) for d in kpm_snapshot.values())
                     tot_b = dl_b + ul_b
-                    # num_kpm_reports_total = sum(d.get('reports_in_interval', 0) for d in kpm_snapshot.values()) # If you add this back
+                    num_kpm_reports_total = sum(d.get('reports_in_interval', 0) for d in kpm_snapshot.values()) # If you add this back
 
                     srv_eff = "N/A"
                     if int_e_uj is not None: srv_eff = f"{tot_b/int_e_uj:.2f} b/uJ" if int_e_uj>1e-9 else ("inf b/uJ" if tot_b>1e-9 else "0.00 b/uJ")
@@ -476,7 +476,7 @@ class PowerManager(xAppBase):
 
                     log_parts = [f"RU:[{ru_usage}] (AvgMax:{control_val:>6.2f}%)", f"TDP:{self.current_tdp_w:>5.1f}W", 
                                  f"PkgPwr:{pkg_pwr_log_str}W", f"IntEgy:{energy_interval_j_str}J",
-                                 # f"KPMreps:{num_kpm_reports_total}", # Add this if you re-enable 'reports_in_interval'
+                                 f"KPMreps:{num_kpm_reports_total}", # Add this if you re-enable 'reports_in_interval'
                                  f"TotBits:{tot_b/1e6:.2f}Mb", f"SrvEff:{srv_eff}", f"CLoSEff:[{' | '.join(clos_eff_strs) or 'No CLoS DUs'}]"]
                     self._log(INFO, " | ".join(log_parts)); last_print_time = now
                 time.sleep(max(0, 1.0 - (time.monotonic() - start_time)))
