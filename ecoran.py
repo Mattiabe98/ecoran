@@ -8,8 +8,8 @@ from typing import List, Dict, Any, Set, Tuple, Optional
 import threading
 import argparse
 import signal
-import logging # Added for file logging
-from logging.handlers import RotatingFileHandler # Optional: for log rotation
+import logging 
+from logging.handlers import RotatingFileHandler
 
 try:
     from lib.xAppBase import xAppBase 
@@ -21,7 +21,7 @@ except ImportError:
 MSR_IA32_TSC = 0x10
 MSR_IA32_MPERF = 0xE7
 
-# Verbosity levels (used for config values)
+# Verbosity levels
 SILENT = 0
 ERROR = 1
 WARN = 2
@@ -29,63 +29,38 @@ INFO = 3
 DEBUG_KPM = 4
 DEBUG_ALL = 5
 
-# Map verbosity config values to logging levels
 LOGGING_LEVEL_MAP = {
-    SILENT: logging.CRITICAL + 10, # Higher than critical to silence it
-    ERROR: logging.ERROR,
-    WARN: logging.WARNING,
-    INFO: logging.INFO,
-    DEBUG_KPM: logging.DEBUG, # Map KPM debug to general DEBUG
-    DEBUG_ALL: logging.DEBUG  # Map all debug to general DEBUG
+    SILENT: logging.CRITICAL + 10, ERROR: logging.ERROR, WARN: logging.WARNING,
+    INFO: logging.INFO, DEBUG_KPM: logging.DEBUG, DEBUG_ALL: logging.DEBUG
 }
 
-
 def read_msr_direct(cpu_id: int, reg: int) -> Optional[int]:
-    # ... (no changes) ...
     try:
         with open(f'/dev/cpu/{cpu_id}/msr', 'rb') as f:
             f.seek(reg)
-            msr_val_bytes = f.read(8) 
-            if len(msr_val_bytes) == 8:
-                return struct.unpack('<Q', msr_val_bytes)[0]
-            else: return None
-    except FileNotFoundError: return None
-    except PermissionError: return None
-    except OSError as e:
-        if e.errno != 2 and e.errno != 13:
-             print(f"W: OSError reading MSR {hex(reg)} on CPU {cpu_id}: {e}", file=sys.stderr)
-        return None
-    except Exception as e:
-        print(f"E: Unexpected error reading MSR {hex(reg)} on CPU {cpu_id}: {e}", file=sys.stderr)
-        return None
+            val_bytes = f.read(8) 
+            return struct.unpack('<Q', val_bytes)[0] if len(val_bytes) == 8 else None
+    except Exception: return None
 
 class CoreMSRData:
-    # ... (no changes) ...
     def __init__(self, core_id: int):
-        self.core_id = core_id
-        self.mperf: Optional[int] = None
-        self.tsc: Optional[int] = None
-        self.busy_percent: float = 0.0
+        self.core_id, self.mperf, self.tsc, self.busy_percent = core_id, None, None, 0.0
 
 class PowerManager(xAppBase):
-    MAX_VOLUME_COUNTER_KBITS = (2**32) - 1 
+    # MAX_VOLUME_COUNTER_KBITS is not used if KPM values are deltas over granulPeriod
 
     def __init__(self, config_path: str, http_server_port: int, rmr_port: int, kpm_ran_func_id: int = 2):
         self.config_path = config_path
-        self.config = self._load_config() # Load config first to get logging params
+        self.config = self._load_config()
         
-        # Initialize logging
-        self.logger = logging.getLogger("EcoRANPowerManager")
-        self.console_verbosity = int(self.config.get('console_verbosity_level', INFO))
-        self.file_verbosity = int(self.config.get('file_verbosity_level', DEBUG_KPM)) # Log more to file by default
+        self.verbosity = int(self.config.get('console_verbosity_level', INFO))
+        self.file_verbosity_cfg = int(self.config.get('file_verbosity_level', DEBUG_KPM))
         self.log_file_path_base = self.config.get('log_file_path', "/mnt/data/ecoran")
         self._setup_logging()
 
-        # Now call super and initialize other attributes
         xapp_base_config_file = self.config.get('xapp_base_config_file', '')
         super().__init__(xapp_base_config_file, http_server_port, rmr_port)
-
-        # ... (rest of __init__ as before) ...
+        
         self.intel_sst_path = self.config.get('intel_speed_select_path', 'intel-speed-select')
         self.rapl_base_path = self.config.get('rapl_path_base', '/sys/class/powercap/intel-rapl:0')
         self.power_limit_uw_file = os.path.join(self.rapl_base_path, "constraint_0_power_limit_uw")
@@ -104,89 +79,71 @@ class PowerManager(xAppBase):
         self.max_samples_cpu_avg = int(self.config.get('max_cpu_usage_samples', 3))
         self.dry_run = bool(self.config.get('dry_run', False))
         self.current_tdp_w = float(self.tdp_min_w) 
-        self.last_pkg_energy_uj: Optional[int] = None
-        self.last_energy_read_time: Optional[float] = None
+        self.last_pkg_energy_uj: Optional[int] = None # For PkgPower calculation
+        self.last_energy_read_time: Optional[float] = None # For PkgPower calculation
+        self.energy_at_last_log_uj: Optional[int] = None # For interval energy for server-wide efficiency
         self.max_ru_timing_usage_history: List[float] = []
         self.last_tdp_adjustment_time: float = 0.0
         self.ru_core_msr_prev_data: Dict[int, CoreMSRData] = {}
         self.kpm_ran_func_id = kpm_ran_func_id
-        if hasattr(self, 'e2sm_kpm') and self.e2sm_kpm is not None:
-            self.e2sm_kpm.set_ran_func_id(self.kpm_ran_func_id)
-        else:
-            self._log(WARN, "xAppBase.e2sm_kpm module not found or not initialized. KPM functionality will be disabled.")
-            self.e2sm_kpm = None
+        if hasattr(self, 'e2sm_kpm') and self.e2sm_kpm is not None: self.e2sm_kpm.set_ran_func_id(self.kpm_ran_func_id)
+        else: self._log(WARN, "xAppBase.e2sm_kpm module unavailable."); self.e2sm_kpm = None
         self.gnb_ids_map = self.config.get('gnb_ids', {}) 
         self.gnb_id_to_du_name_map = {v: k for k, v in self.gnb_ids_map.items()}
         clos_association_config = self.config.get('clos_association', {})
         self.clos_to_du_names_map: Dict[int, List[str]] = {}
         ran_components_in_config = self.config.get('ran_cores', {}).keys()
-        for clos_id, components in clos_association_config.items():
-            if not isinstance(components, list):
-                self._log(WARN, f"Components for CLOS {clos_id} is not a list in config. Skipping.")
-                continue
-            self.clos_to_du_names_map[int(clos_id)] = [
-                comp for comp in components if comp in ran_components_in_config and comp.startswith('du')
-            ]
-        self.accumulated_kpm_metrics: Dict[str, Dict[str, Any]] = {} 
-        self.kpm_data_lock = threading.Lock()
-        self.energy_at_last_log_uj: Optional[int] = None 
+        for cid, comps in clos_association_config.items():
+            if isinstance(comps, list): self.clos_to_du_names_map[int(cid)] = [c for c in comps if c in ran_components_in_config and c.startswith('du')]
+            else: self._log(WARN, f"Components for CLOS {cid} not a list. Skipping.")
+        
+        self.kpm_gnb_tracking: Dict[str, Dict[str, Any]] = {} # New: for per-gNB KPM state
+        self.kpm_data_lock = threading.Lock() # To protect kpm_gnb_tracking
+        
         self._validate_config()
-        if self.dry_run:
-            self._log(INFO, "!!!!!!!!!!!! DRY RUN MODE ENABLED !!!!!!!!!!!!")
+        if self.dry_run: self._log(INFO, "!!!!!!!!!!!! DRY RUN MODE ENABLED !!!!!!!!!!!!")
 
     def _setup_logging(self):
-        self.logger.handlers = [] # Clear any existing handlers
-        self.logger.propagate = False # Prevent double logging if root logger is configured
-        
-        # Determine overall minimum level for the logger itself
-        # The logger's level must be <= the lowest level of its handlers
-        effective_console_level = LOGGING_LEVEL_MAP.get(self.console_verbosity, logging.INFO)
-        effective_file_level = LOGGING_LEVEL_MAP.get(self.file_verbosity, logging.DEBUG)
-        
-        # Set logger level to the more verbose of the two handlers, or INFO if both are silent
-        if self.console_verbosity == SILENT and self.file_verbosity == SILENT:
-            self.logger.setLevel(logging.CRITICAL + 10) # Effectively silent
-        else:
-            self.logger.setLevel(min(effective_console_level, effective_file_level))
+        # ... (same as previous) ...
+        self.logger = logging.getLogger("EcoRANPowerManager")
+        self.logger.handlers = []
+        self.logger.propagate = False
+        console_level = LOGGING_LEVEL_MAP.get(self.verbosity, logging.INFO)
+        file_level = LOGGING_LEVEL_MAP.get(self.file_verbosity_cfg, logging.DEBUG)
+        overall_logger_level = min(console_level, file_level) if not (self.verbosity == SILENT and self.file_verbosity_cfg == SILENT) else logging.CRITICAL + 10
+        self.logger.setLevel(overall_logger_level)
 
-
-        # Console Handler
-        if self.console_verbosity > SILENT:
+        if self.verbosity > SILENT:
             ch = logging.StreamHandler(sys.stdout)
-            ch.setLevel(effective_console_level)
-            formatter = logging.Formatter('%(asctime)s %(levelname).1s: %(message)s', datefmt='%H:%M:%S')
-            ch.setFormatter(formatter)
+            ch.setLevel(console_level)
+            ch_formatter = logging.Formatter('%(asctime)s %(levelname).1s: %(message)s', datefmt='%H:%M:%S')
+            ch.setFormatter(ch_formatter)
             self.logger.addHandler(ch)
 
-        # File Handler
-        if self.file_verbosity > SILENT and self.log_file_path_base:
+        if self.file_verbosity_cfg > SILENT and self.log_file_path_base:
             try:
                 os.makedirs(self.log_file_path_base, exist_ok=True)
-                log_filename = f"ecoran_log_{time.strftime('%Y%m%d_%H%M%S')}.log"
-                log_filepath = os.path.join(self.log_file_path_base, log_filename)
-                
-                # fh = RotatingFileHandler(log_filepath, maxBytes=5*1024*1024, backupCount=3) # Optional: 5MB, 3 backups
-                fh = logging.FileHandler(log_filepath)
-                fh.setLevel(effective_file_level)
-                file_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-                fh.setFormatter(file_formatter)
+                log_fn = f"ecoran_log_{time.strftime('%Y%m%d_%H%M%S')}.log"
+                log_fp = os.path.join(self.log_file_path_base, log_fn)
+                fh = logging.FileHandler(log_fp)
+                fh.setLevel(file_level)
+                fh_formatter = logging.Formatter('%(asctime)s.%(msecs)03d [%(levelname)s] %(module)s:%(lineno)d: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+                fh.setFormatter(fh_formatter)
                 self.logger.addHandler(fh)
-                self_initial_log_msg = f"File logging started: {log_filepath} at level {logging.getLevelName(effective_file_level)}"
-                if self.console_verbosity > SILENT : print(f"{time.strftime('%H:%M:%S')} INFO: {self_initial_log_msg}") # Also print to console
-                self.logger.info(self_initial_log_msg) # Log to file
-
+                self._log(INFO, f"File logging started: {log_fp} at level {logging.getLevelName(file_level)}")
             except Exception as e:
-                print(f"E: Failed to set up file logging to {self.log_file_path_base}: {e}")
+                print(f"{time.strftime('%H:%M:%S')} E: Failed to set up file logging to {self.log_file_path_base}: {e}")
 
+    def _log(self, level_num: int, message: str):
+        if hasattr(self, 'logger'): 
+            if level_num == ERROR: self.logger.error(message)
+            elif level_num == WARN: self.logger.warning(message)
+            elif level_num == INFO: self.logger.info(message)
+            elif level_num >= DEBUG_KPM: self.logger.debug(message)
+        elif level_num > SILENT : 
+            level_map_fallback = {ERROR: "E:", WARN: "W:", INFO: "INFO:", DEBUG_KPM: "DBG_KPM:", DEBUG_ALL: "DEBUG:"}
+            print(f"{time.strftime('%H:%M:%S')} {level_map_fallback.get(level_num, f'LVL{level_num}:')} {message}")
 
-    def _log(self, level: int, message: str):
-        # Map custom verbosity to logging levels
-        if level == ERROR: self.logger.error(message)
-        elif level == WARN: self.logger.warning(message)
-        elif level == INFO: self.logger.info(message)
-        elif level >= DEBUG_KPM: # Both DEBUG_KPM and DEBUG_ALL map to logger.debug
-            self.logger.debug(message)
-        # SILENT level effectively does nothing if logger/handler levels are set higher
 
     def _validate_config(self):
         if not os.path.exists(self.rapl_base_path) or not os.path.exists(self.power_limit_uw_file):
@@ -404,6 +361,7 @@ class PowerManager(xAppBase):
             # self._log(DEBUG_KPM, f"KPM CB: Extracted meas_report from {e2_agent_id}: {meas_report}") 
             if not meas_report: self._log(WARN, f"KPM CB: Failed to extract KPM measurement data from {e2_agent_id}."); return
             
+            # Values from KPM are deltas for the granulPeriod, in kbits
             dl_volume_kbits_in_period, ul_volume_kbits_in_period = 0.0, 0.0
             measurements = meas_report.get("measData", {})
             # self._log(DEBUG_KPM, f"KPM CB: measData from {e2_agent_id}: {measurements}") 
@@ -420,39 +378,46 @@ class PowerManager(xAppBase):
                     except (ValueError, TypeError): self._log(WARN, f"KPM CB: Metric '{metric_name}' value '{value_to_convert}' invalid for float().")
                 else: self._log(WARN, f"KPM CB: Metric '{metric_name}' from {e2_agent_id} unexpected value format: {value_list}.")
 
+            # Convert reported kbits (which is delta for the period) to bits
             delta_dl_bits = dl_volume_kbits_in_period * 1000.0 
             delta_ul_bits = ul_volume_kbits_in_period * 1000.0
 
             with self.kpm_data_lock:
-                if e2_agent_id not in self.accumulated_kpm_metrics:
-                    self.accumulated_kpm_metrics[e2_agent_id] = {
-                        'dl_bits_interval_sum':0.0, 'ul_bits_interval_sum':0.0,
-                        'num_reports_processed':0 
+                if e2_agent_id not in self.kpm_gnb_tracking: # Changed from accumulated_kpm_metrics
+                    # Initialize for the new per-gNB tracking
+                    self.kpm_gnb_tracking[e2_agent_id] = {
+                        'bits_sum_for_main_interval_dl': 0.0,
+                        'bits_sum_for_main_interval_ul': 0.0,
+                        'num_reports_for_main_interval': 0
+                        # No prev_ values needed here as KPM provides deltas
                     }
+                    self._log(DEBUG_KPM, f"KPM CB (Delta Volume): Initialized tracking for {e2_agent_id}")
                 
-                acc_data = self.accumulated_kpm_metrics[e2_agent_id]
+                tracking_data = self.kpm_gnb_tracking[e2_agent_id]
                 
-                acc_data['dl_bits_interval_sum'] += delta_dl_bits
-                acc_data['ul_bits_interval_sum'] += delta_ul_bits
-                acc_data['num_reports_processed'] += 1 # Increment for every KPM report
+                tracking_data['bits_sum_for_main_interval_dl'] += delta_dl_bits
+                tracking_data['bits_sum_for_main_interval_ul'] += delta_ul_bits
+                tracking_data['num_reports_for_main_interval'] += 1
                 
                 self._log(DEBUG_KPM, f"KPM CB (Delta Volume): {e2_agent_id}: Reported DL_kbit={dl_volume_kbits_in_period:.0f}, UL_kbit={ul_volume_kbits_in_period:.0f} => Added Ddl_b={delta_dl_bits:.0f}, Dul_b={delta_ul_bits:.0f}")
-                self._log(DEBUG_KPM, f"KPM CB (Delta Volume): Accumulated for {e2_agent_id}: {acc_data}")
+                self._log(DEBUG_KPM, f"KPM CB (Delta Volume): Accumulated for main interval for {e2_agent_id}: {tracking_data}")
         
         except Exception as e: self._log(ERROR, f"Error processing KPM indication from {e2_agent_id}: {e}"); import traceback; traceback.print_exc()
 
     def _get_and_reset_accumulated_kpm_metrics(self) -> Dict[str, Dict[str, Any]]:
+        # This now processes kpm_gnb_tracking
         with self.kpm_data_lock:
             snap = {}
-            for gnb_id, data in self.accumulated_kpm_metrics.items():
+            for gnb_id, data in self.kpm_gnb_tracking.items():
                 snap[gnb_id] = {
-                    'dl_bits': data.get('dl_bits_interval_sum', 0.0), 
-                    'ul_bits': data.get('ul_bits_interval_sum', 0.0),
-                    'reports_in_interval': data.get('num_reports_processed', 0) # Include reports count
+                    'dl_bits': data.get('bits_sum_for_main_interval_dl', 0.0), 
+                    'ul_bits': data.get('bits_sum_for_main_interval_ul', 0.0),
+                    'reports_in_interval': data.get('num_reports_for_main_interval', 0)
                 }
-                data['dl_bits_interval_sum'] = 0.0
-                data['ul_bits_interval_sum'] = 0.0
-                data['num_reports_processed'] = 0 # Reset for the next print interval
+                # Reset sums for the next print interval
+                data['bits_sum_for_main_interval_dl'] = 0.0
+                data['bits_sum_for_main_interval_ul'] = 0.0
+                data['num_reports_for_main_interval'] = 0
         return snap
 
     def _setup_kpm_subscriptions(self):
@@ -460,31 +425,51 @@ class PowerManager(xAppBase):
         if not self.e2sm_kpm: self._log(WARN, "e2sm_kpm module unavailable."); return
         nodes = list(self.gnb_ids_map.values())
         if not nodes: self._log(WARN, "No gNB IDs for KPM."); return
+        
+        # Make sure your config.yaml reflects these if you change the KPM subscription period
+        # Defaulting to 1 sec KPM reports as per previous logs
+        kpm_report_p = int(self.config.get('kpm_report_period_ms', 1000)) 
+        kpm_gran_p = int(self.config.get('kpm_granularity_period_ms', 1000))
+        
+        # If you want KPM to report totals over 5s to match app print interval:
+        # kpm_report_p = self.print_interval_s * 1000
+        # kpm_gran_p = self.print_interval_s * 1000
+        # self._log(INFO, f"KPM Subscription: Report and Granularity period set to {kpm_report_p}ms to match app print interval.")
+
+
         metrics = ['DRB.RlcSduTransmittedVolumeDL', 'DRB.RlcSduTransmittedVolumeUL']
-        self._log(INFO, f"KPM: Subscribing to metrics: {metrics}")
-        rep_ms, gran_ms = int(self.config.get('kpm_report_period_ms',1000)), int(self.config.get('kpm_granularity_period_ms',1000))
+        self._log(INFO, f"KPM: Subscribing to metrics: {metrics} with ReportPeriod={kpm_report_p}ms, Granularity={kpm_gran_p}ms")
+        
         style = 1; successes = 0
         for node_id in nodes:
             cb_adapter = lambda ag, sb, hd, ms, st=style: self._kpm_indication_callback(ag,sb,hd,ms,kpm_report_style=st,ue_id=None)
             if self.dry_run:
                 self._log(INFO, f"[DRY RUN] KPM Sub: Node {node_id}, Metrics {metrics}, Style {style}")
                 with self.kpm_data_lock: 
-                    if node_id not in self.accumulated_kpm_metrics: 
-                        self.accumulated_kpm_metrics[node_id] = {'dl_bits_interval_sum':0.0, 'ul_bits_interval_sum':0.0, 'num_reports_processed':0}
+                    if node_id not in self.kpm_gnb_tracking: 
+                        self.kpm_gnb_tracking[node_id] = {
+                            'bits_sum_for_main_interval_dl':0.0, 
+                            'bits_sum_for_main_interval_ul':0.0, 
+                            'num_reports_for_main_interval':0
+                        }
                 successes+=1; continue
             try:
-                self._log(INFO, f"Subscribing KPM: Node {node_id}, Metrics {metrics}, Report {rep_ms}ms, Granularity {gran_ms}ms, Style {style}")
-                self.e2sm_kpm.subscribe_report_service_style_1(node_id, rep_ms, metrics, gran_ms, cb_adapter)
+                self._log(INFO, f"Subscribing KPM: Node {node_id}, Metrics {metrics}, Report {kpm_report_p}ms, Granularity {kpm_gran_p}ms, Style {style}")
+                self.e2sm_kpm.subscribe_report_service_style_1(node_id, kpm_report_p, metrics, kpm_gran_p, cb_adapter)
                 with self.kpm_data_lock:
-                    if node_id not in self.accumulated_kpm_metrics: 
-                        self.accumulated_kpm_metrics[node_id] = {'dl_bits_interval_sum':0.0, 'ul_bits_interval_sum':0.0, 'num_reports_processed':0}
+                    if node_id not in self.kpm_gnb_tracking: 
+                        self.kpm_gnb_tracking[node_id] = {
+                            'bits_sum_for_main_interval_dl':0.0, 
+                            'bits_sum_for_main_interval_ul':0.0, 
+                            'num_reports_for_main_interval':0
+                        }
                 successes+=1
             except Exception as e: self._log(ERROR, f"KPM subscription failed for {node_id}: {e}"); import traceback; traceback.print_exc()
         if successes > 0: self._log(INFO, f"--- KPM Subscriptions: {successes} nodes attempted. ---")
         elif nodes: self._log(WARN, "No KPM subscriptions initiated.")
     
     @xAppBase.start_function
-    def run_power_management_xapp(self):
+    def run_power_management_xapp(self): # Main loop uses self._log
         if os.geteuid() != 0 and not self.dry_run: print("E: Must be root for live run."); sys.exit(1)
         try:
             self.energy_at_last_log_uj = self._read_current_energy_uj()
@@ -509,16 +494,24 @@ class PowerManager(xAppBase):
                 now = time.monotonic()
                 if now - self.last_tdp_adjustment_time >= self.tdp_update_interval_s and self.ru_timing_core_indices:
                     self._adjust_tdp(control_val); self.last_tdp_adjustment_time = now
+                
                 if now - last_print_time >= self.print_interval_s:
                     pwr_w, pwr_ok = self._get_pkg_power_w(); int_e_uj = self._get_interval_energy_uj()
                     kpm_snapshot = self._get_and_reset_accumulated_kpm_metrics() 
                     
-                    dl_b, ul_b = sum(d.get('dl_bits',0.0) for d in kpm_snapshot.values()), sum(d.get('ul_bits',0.0) for d in kpm_snapshot.values())
+                    dl_b = sum(d.get('dl_bits',0.0) for d in kpm_snapshot.values())
+                    ul_b = sum(d.get('ul_bits',0.0) for d in kpm_snapshot.values())
                     tot_b = dl_b + ul_b
                     num_kpm_reports_total = sum(d.get('reports_in_interval', 0) for d in kpm_snapshot.values())
 
                     srv_eff = "N/A"
-                    if int_e_uj is not None: srv_eff = f"{tot_b/int_e_uj:.2f} b/uJ" if int_e_uj>1e-9 else ("inf b/uJ" if tot_b>1e-9 else "0.00 b/uJ")
+                    if int_e_uj is not None and int_e_uj > 1e-9 : 
+                        srv_eff = f"{tot_b/int_e_uj:.2f} b/uJ"
+                    elif tot_b > 1e-9 : # Some bits but near zero energy
+                        srv_eff = "inf b/uJ"
+                    else: # Near zero bits and near zero energy
+                        srv_eff = "0.00 b/uJ"
+                        
                     clos_eff_strs = []
                     if self.clos_to_du_names_map:
                         for cid, dus in self.clos_to_du_names_map.items():
@@ -526,7 +519,10 @@ class PowerManager(xAppBase):
                                          kpm_snapshot.get(self.gnb_ids_map.get(du_n),{}).get('ul_bits',0.0) 
                                          for du_n in dus if self.gnb_ids_map.get(du_n))
                             eff_str = "N/A";
-                            if int_e_uj is not None: eff_str = f"{clos_b/int_e_uj:.2f} b/uJ" if int_e_uj>1e-9 else ("inf b/uJ" if clos_b>1e-9 else "0.00 b/uJ")
+                            if int_e_uj is not None and int_e_uj > 1e-9 : 
+                                eff_str = f"{clos_b/int_e_uj:.2f} b/uJ"
+                            elif clos_b > 1e-9 : eff_str = "inf b/uJ"
+                            else: eff_str = "0.00 b/uJ"
                             clos_eff_strs.append(f"CLOS{cid}:{eff_str} ({clos_b/1e6:.2f}Mb)")
                     ru_usage = ", ".join([f"C{i}:{self.ru_core_msr_prev_data[i].busy_percent:>6.2f}%" if i in self.ru_core_msr_prev_data else f"C{i}:N/A" for i in self.ru_timing_core_indices]) or "N/A"
                     
@@ -535,7 +531,7 @@ class PowerManager(xAppBase):
 
                     log_parts = [f"RU:[{ru_usage}] (AvgMax:{control_val:>6.2f}%)", f"TDP:{self.current_tdp_w:>5.1f}W", 
                                  f"PkgPwr:{pkg_pwr_log_str}W", f"IntEgy:{energy_interval_j_str}J",
-                                 f"KPMreps:{num_kpm_reports_total}", # Added KPM report count
+                                 f"KPMreps:{num_kpm_reports_total}", 
                                  f"TotBits:{tot_b/1e6:.2f}Mb", f"SrvEff:{srv_eff}", f"CLoSEff:[{' | '.join(clos_eff_strs) or 'No CLoS DUs'}]"]
                     self._log(INFO, " | ".join(log_parts)); last_print_time = now
                 time.sleep(max(0, 1.0 - (time.monotonic() - start_time)))
@@ -548,8 +544,8 @@ class PowerManager(xAppBase):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="EcoRAN Power Manager with KPM xApp")
     parser.add_argument("config_path", type=str, help="Path to YAML config.")
-    parser.add_argument("--http_server_port",type=int,default=8090,help="HTTP server port.") # Corrected default
-    parser.add_argument("--rmr_port",type=int,default=4560,help="RMR port.") # Corrected default
+    parser.add_argument("--http_server_port",type=int,default=8090,help="HTTP server port.")
+    parser.add_argument("--rmr_port",type=int,default=4560,help="RMR port.")
     args = parser.parse_args()
     manager = None
     try:
