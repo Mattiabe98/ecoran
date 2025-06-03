@@ -54,7 +54,7 @@ class CoreMSRData:
         self.busy_percent: float = 0.0
 
 class PowerManager(xAppBase):
-    # MAX_VOLUME_COUNTER_KBITS is no longer needed if KPM reports deltas directly.
+    MAX_VOLUME_COUNTER_KBITS = (2**32) - 1 
 
     def __init__(self, config_path: str, http_server_port: int, rmr_port: int, kpm_ran_func_id: int = 2):
         self.config_path = config_path
@@ -339,17 +339,16 @@ class PowerManager(xAppBase):
         if not self.e2sm_kpm: self._log(WARN, f"KPM indication from {e2_agent_id}, but e2sm_kpm module unavailable."); return
         try:
             meas_report = self.e2sm_kpm.extract_meas_data(indication_msg_bytes)
-            self._log(DEBUG_KPM, f"KPM CB: Extracted meas_report from {e2_agent_id}: {meas_report}")
+            # self._log(DEBUG_KPM, f"KPM CB: Extracted meas_report from {e2_agent_id}: {meas_report}") # Can be very verbose
             if not meas_report: self._log(WARN, f"KPM CB: Failed to extract KPM measurement data from {e2_agent_id}."); return
             
-            # The values from KPM are deltas for the granulPeriod, in kbits
+            # Values from KPM are deltas for the granulPeriod, in kbits
             dl_volume_kbits_in_period, ul_volume_kbits_in_period = 0.0, 0.0
             measurements = meas_report.get("measData", {})
-            # self._log(DEBUG_KPM, f"KPM CB: measData from {e2_agent_id}: {measurements}") # Can be too verbose
+            # self._log(DEBUG_KPM, f"KPM CB: measData from {e2_agent_id}: {measurements}") # Can be very verbose
             if not isinstance(measurements, dict): self._log(WARN, f"KPM CB: Invalid 'measData' from {e2_agent_id}."); return
 
             for metric_name, value_list in measurements.items():
-                # self._log(DEBUG_KPM, f"KPM CB: Metric from {e2_agent_id}: '{metric_name}', Value_List: '{value_list}'")
                 if isinstance(value_list, list) and value_list:
                     value_to_convert = value_list[0] 
                     try:
@@ -357,7 +356,7 @@ class PowerManager(xAppBase):
                             dl_volume_kbits_in_period = float(value_to_convert)
                         elif metric_name == 'DRB.RlcSduTransmittedVolumeUL': 
                             ul_volume_kbits_in_period = float(value_to_convert)
-                    except (ValueError, TypeError): self._log(WARN, f"KPM CB: Metric '{metric_name}' value '{value_to_convert}' invalid.")
+                    except (ValueError, TypeError): self._log(WARN, f"KPM CB: Metric '{metric_name}' value '{value_to_convert}' invalid for float().")
                 else: self._log(WARN, f"KPM CB: Metric '{metric_name}' from {e2_agent_id} unexpected value format: {value_list}.")
 
             # Convert reported kbits (which is delta for the period) to bits
@@ -366,10 +365,10 @@ class PowerManager(xAppBase):
 
             with self.kpm_data_lock:
                 if e2_agent_id not in self.accumulated_kpm_metrics:
-                    # This should be initialized in _setup_kpm_subscriptions
                     self._log(WARN, f"KPM CB (Delta Volume): acc_data missing for {e2_agent_id}. Defensive Init.")
                     self.accumulated_kpm_metrics[e2_agent_id] = {
                         'dl_bits_interval_sum':0.0, 'ul_bits_interval_sum':0.0
+                        # No 'prev_...' needed as KPM value is already a delta
                     }
                 
                 acc_data = self.accumulated_kpm_metrics[e2_agent_id]
@@ -384,11 +383,17 @@ class PowerManager(xAppBase):
 
     def _get_and_reset_accumulated_kpm_metrics(self) -> Dict[str, Dict[str, Any]]:
         with self.kpm_data_lock:
-            snap = {gnb_id: {'dl_bits': data['dl_bits_interval_sum'], 'ul_bits': data['ul_bits_interval_sum']} 
-                    for gnb_id, data in self.accumulated_kpm_metrics.items()}
-            for data in self.accumulated_kpm_metrics.values(): # Reset sums for the next print interval
+            snap = {}
+            for gnb_id, data in self.accumulated_kpm_metrics.items():
+                snap[gnb_id] = {
+                    'dl_bits': data.get('dl_bits_interval_sum', 0.0), 
+                    'ul_bits': data.get('ul_bits_interval_sum', 0.0),
+                    'reports_in_interval': data.get('num_reports_processed', 0) # Keep if you add this back
+                }
+                # Reset sums for the next print interval
                 data['dl_bits_interval_sum'] = 0.0
                 data['ul_bits_interval_sum'] = 0.0
+                if 'num_reports_processed' in data: data['num_reports_processed'] = 0 # Reset if using
         return snap
 
     def _setup_kpm_subscriptions(self):
@@ -411,7 +416,7 @@ class PowerManager(xAppBase):
             try:
                 self._log(INFO, f"Subscribing KPM: Node {node_id}, Metrics {metrics}, Report {rep_ms}ms, Granularity {gran_ms}ms, Style {style}")
                 self.e2sm_kpm.subscribe_report_service_style_1(node_id, rep_ms, metrics, gran_ms, cb_adapter)
-                with self.kpm_data_lock: # Ensure entry exists
+                with self.kpm_data_lock:
                     if node_id not in self.accumulated_kpm_metrics: 
                         self.accumulated_kpm_metrics[node_id] = {'dl_bits_interval_sum':0.0, 'ul_bits_interval_sum':0.0}
                 successes+=1
@@ -447,15 +452,20 @@ class PowerManager(xAppBase):
                     self._adjust_tdp(control_val); self.last_tdp_adjustment_time = now
                 if now - last_print_time >= self.print_interval_s:
                     pwr_w, pwr_ok = self._get_pkg_power_w(); int_e_uj = self._get_interval_energy_uj()
-                    kpm = self._get_and_reset_accumulated_kpm_metrics()
-                    dl_b, ul_b = sum(d.get('dl_bits',0.0) for d in kpm.values()), sum(d.get('ul_bits',0.0) for d in kpm.values())
+                    kpm_snapshot = self._get_and_reset_accumulated_kpm_metrics() # Renamed for clarity
+                    
+                    dl_b, ul_b = sum(d.get('dl_bits',0.0) for d in kpm_snapshot.values()), sum(d.get('ul_bits',0.0) for d in kpm_snapshot.values())
                     tot_b = dl_b + ul_b
+                    # num_kpm_reports_total = sum(d.get('reports_in_interval', 0) for d in kpm_snapshot.values()) # If you add this back
+
                     srv_eff = "N/A"
                     if int_e_uj is not None: srv_eff = f"{tot_b/int_e_uj:.2f} b/uJ" if int_e_uj>1e-9 else ("inf b/uJ" if tot_b>1e-9 else "0.00 b/uJ")
                     clos_eff_strs = []
                     if self.clos_to_du_names_map:
                         for cid, dus in self.clos_to_du_names_map.items():
-                            clos_b = sum(kpm.get(self.gnb_ids_map.get(du_n),{}).get('dl_bits',0.0) + kpm.get(self.gnb_ids_map.get(du_n),{}).get('ul_bits',0.0) for du_n in dus if self.gnb_ids_map.get(du_n))
+                            clos_b = sum(kpm_snapshot.get(self.gnb_ids_map.get(du_n),{}).get('dl_bits',0.0) + 
+                                         kpm_snapshot.get(self.gnb_ids_map.get(du_n),{}).get('ul_bits',0.0) 
+                                         for du_n in dus if self.gnb_ids_map.get(du_n))
                             eff_str = "N/A";
                             if int_e_uj is not None: eff_str = f"{clos_b/int_e_uj:.2f} b/uJ" if int_e_uj>1e-9 else ("inf b/uJ" if clos_b>1e-9 else "0.00 b/uJ")
                             clos_eff_strs.append(f"CLOS{cid}:{eff_str} ({clos_b/1e6:.2f}Mb)")
@@ -466,6 +476,7 @@ class PowerManager(xAppBase):
 
                     log_parts = [f"RU:[{ru_usage}] (AvgMax:{control_val:>6.2f}%)", f"TDP:{self.current_tdp_w:>5.1f}W", 
                                  f"PkgPwr:{pkg_pwr_log_str}W", f"IntEgy:{energy_interval_j_str}J",
+                                 # f"KPMreps:{num_kpm_reports_total}", # Add this if you re-enable 'reports_in_interval'
                                  f"TotBits:{tot_b/1e6:.2f}Mb", f"SrvEff:{srv_eff}", f"CLoSEff:[{' | '.join(clos_eff_strs) or 'No CLoS DUs'}]"]
                     self._log(INFO, " | ".join(log_parts)); last_print_time = now
                 time.sleep(max(0, 1.0 - (time.monotonic() - start_time)))
@@ -478,8 +489,8 @@ class PowerManager(xAppBase):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="EcoRAN Power Manager with KPM xApp")
     parser.add_argument("config_path", type=str, help="Path to YAML config.")
-    parser.add_argument("--http_server_port",type=int,default=8090,help="HTTP server port.")
-    parser.add_argument("--rmr_port",type=int,default=4560,help="RMR port.")
+    parser.add_argument("--http_server_port",type=int,default=8091,help="HTTP server port.")
+    parser.add_argument("--rmr_port",type=int,default=4561,help="RMR port.")
     args = parser.parse_args()
     manager = None
     try:
