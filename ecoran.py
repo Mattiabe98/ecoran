@@ -465,8 +465,12 @@ class PowerManager(xAppBase):
                             if int_e_uj is not None: eff_str = f"{clos_b/int_e_uj:.2f} b/uJ" if int_e_uj>1e-9 else ("inf b/uJ" if clos_b>1e-9 else "0.00 b/uJ")
                             clos_eff_strs.append(f"CLOS{cid}:{eff_str} ({clos_b/1e6:.2f}Mb)")
                     ru_usage = ", ".join([f"C{i}:{self.ru_core_msr_prev_data[i].busy_percent:>6.2f}%" if i in self.ru_core_msr_prev_data else f"C{i}:N/A" for i in self.ru_timing_core_indices]) or "N/A"
+                    
+                    pkg_pwr_log_str = f"{pwr_w:.1f}" if pwr_ok else "N/A"
+                    energy_interval_j_str = f"{int_e_uj/1e6:.2f}" if int_e_uj is not None else "N/A"
+                    
                     log_parts = [f"RU:[{ru_usage}] (AvgMax:{control_val:>6.2f}%)", f"TDP:{self.current_tdp_w:>5.1f}W", 
-                                 f"PkgPwr:{pwr_w:.1f if pwr_ok else 'N/A'}W", f"IntEgy:{int_e_uj/1e6:.2f if int_e_uj is not None else 'N/A'}J",
+                                 f"PkgPwr:{pkg_pwr_log_str}W", f"IntEgy:{energy_interval_j_str}J", # Use prepared strings
                                  f"TotBits:{tot_b/1e6:.2f}Mb", f"SrvEff:{srv_eff}", f"CLoSEff:[{' | '.join(clos_eff_strs) or 'No CLoS DUs'}]"]
                     self._log(INFO, " | ".join(log_parts)); last_print_time = now
                 time.sleep(max(0, 1.0 - (time.monotonic() - start_time)))
