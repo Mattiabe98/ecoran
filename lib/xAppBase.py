@@ -3,6 +3,7 @@ import time
 import json
 import logging
 import threading
+import socket
 
 import ricxappframe
 from ricxappframe.xapp_frame import rmr
@@ -26,6 +27,7 @@ class xAppBase(object):
         super(xAppBase, self).__init__()
         # Default Config
         self.xAPP_IP = "xapp-service"
+        print("IP is: " + str(self.xAPP_IP))
         self.MY_HTTP_SERVER_ADDRESS = "0.0.0.0"     # bind to all interfaces
         self.MY_HTTP_SERVER_PORT = http_server_port # web server listen port
         self.MY_RMR_PORT = rmr_port
@@ -59,7 +61,8 @@ class xAppBase(object):
 
         # Initialize subEndPoint with my IP and ports
         self.subEndPoint = self.subscriber.SubscriptionParamsClientEndpoint(self.xAPP_IP, self.MY_HTTP_SERVER_PORT, self.MY_RMR_PORT)
-
+        self.directives = self.subscriber.SubscriptionParamsE2SubscriptionDirectives(2, 2, False)
+        
         # Create a HTTP server and set the URI handler callbacks
         self.httpServer = ricrest.ThreadedHTTPServer(self.MY_HTTP_SERVER_ADDRESS, self.MY_HTTP_SERVER_PORT)
         if self.subscriber.ResponseHandler(self._subscription_response_callback, self.httpServer) is not True:
@@ -105,7 +108,7 @@ class xAppBase(object):
         subsDetail = self.subscriber.SubscriptionDetail(xapp_event_instance_id, event_trigger_def, [actionDefinitionList])
 
         # Create and send RIC Subscription Request
-        subReq = self.subscriber.SubscriptionParams(None, self.subEndPoint, e2_node_id, ran_function_id, None, [subsDetail])
+        subReq = self.subscriber.SubscriptionParams(None, self.subEndPoint, e2_node_id, ran_function_id, self.directives, [subsDetail])
         data, reason, status  = self.subscriber.Subscribe(subReq)
 
         # Decode RIC Subscription Response
