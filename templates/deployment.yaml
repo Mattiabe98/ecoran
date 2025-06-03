@@ -19,11 +19,16 @@ spec:
           image: "docker.io/boing7898/ecoran:latest"
           imagePullPolicy: Always
           env:
-            PYTHONUNBUFFERED: "0"
-            PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: "python"
-            RMR_SEED_RT: "/opt/ric/config/uta-rtg.rt"
-            RMR_SRC_ID: "xapp-service"
-            RMR_RTG_SVC: "4561" # leave empty, so RMR works correctly with RT Manager Simulator
+            - name: PYTHONUNBUFFERED
+              value: "0"
+            - name: PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION
+              value: "python"
+            - name: RMR_SEED_RT
+              value: "/opt/ric/config/uta-rtg.rt"
+            - name: RMR_SRC_ID
+              value: "xapp-service"
+            - name: RMR_RTG_SVC
+              value: "4561"
           volumeMounts:
             - name: xapp-rtg
               mountPath: /opt/ric/config/uta-rtg.rt
