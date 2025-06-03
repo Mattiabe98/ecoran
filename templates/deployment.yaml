@@ -25,7 +25,7 @@ spec:
               cp -r /opt/ecoran/* /tmp/ecoran/ && \
               cp -r /opt/ecoran/lib /tmp/ecoran/ && \
               cd /tmp/ecoran && \
-              python3 ecoran.py config.yaml
+              sleep infinity;
           volumeMounts:
             - name: xapp-rtg
               mountPath: /opt/ric/config/uta-rtg.rt
