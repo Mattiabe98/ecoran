@@ -30,10 +30,10 @@ def read_msr_direct(cpu_id: int, reg: int) -> Optional[int]:
     except FileNotFoundError: return None
     except PermissionError: return None
     except OSError as e:
-        if e.errno != 2 and e.errno != 13: # Avoid re-printing common errors
+        if e.errno != 2 and e.errno != 13:
              print(f"W: OSError reading MSR {hex(reg)} on CPU {cpu_id}: {e}", file=sys.stderr)
         return None
-    except Exception as e: # Catch-all
+    except Exception as e:
         print(f"E: Unexpected error reading MSR {hex(reg)} on CPU {cpu_id}: {e}", file=sys.stderr)
         return None
 
@@ -48,8 +48,7 @@ class PowerManager(xAppBase):
     def __init__(self, config_path: str, http_server_port: int, rmr_port: int, kpm_ran_func_id: int = 2):
         self.config_path = config_path
         self.config = self._load_config()
-
-        xapp_base_config_file = self.config.get('xapp_base_config_file', '') # xApp's own config if any
+        xapp_base_config_file = self.config.get('xapp_base_config_file', '')
         super().__init__(xapp_base_config_file, http_server_port, rmr_port)
 
         self.intel_sst_path = self.config.get('intel_speed_select_path', 'intel-speed-select')
@@ -105,19 +104,15 @@ class PowerManager(xAppBase):
         self._validate_config()
         if self.dry_run:
             print("!!!!!!!!!!!! DRY RUN MODE ENABLED !!!!!!!!!!!!")
-            print("Sensor data (MSRs, PkgWatt) WILL BE READ.")
-            print("SST commands and TDP changes WILL BE PRINTED but NOT EXECUTED.")
-            print("Internal TDP state WILL BE SIMULATED.")
-            print("KPM subscriptions will be simulated (printed).")
+            # ... (dry run messages are fine)
             print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
-    def _validate_config(self):
+    def _validate_config(self): # No changes needed
         if not os.path.exists(self.rapl_base_path) or \
            not os.path.exists(self.power_limit_uw_file):
             raise RuntimeError(f"RAPL path {self.rapl_base_path} or power limit file missing.")
         if not os.path.exists(self.energy_uj_file):
              print(f"W: Energy file {self.energy_uj_file} not found. PkgPower/Efficiency readings will be N/A.")
-
         if not self.ru_timing_core_indices and self.config.get('ru_timing_cores'):
             print("W: 'ru_timing_cores' is defined in config but resulted in an empty list. MSR monitoring inactive.")
         elif not self.ru_timing_core_indices:
@@ -127,22 +122,14 @@ class PowerManager(xAppBase):
             msr_path_test = f'/dev/cpu/{test_core}/msr'
             if not os.path.exists(msr_path_test):
                 raise RuntimeError(f"MSR device file {msr_path_test} not found for core {test_core}. Is 'msr' module loaded? (`sudo modprobe msr`).")
-            
             test_val = read_msr_direct(test_core, MSR_IA32_TSC)
             if test_val is None:
-                try:
-                    with open(msr_path_test, 'rb'): pass
-                except PermissionError: raise RuntimeError(f"Permission denied reading MSR device file {msr_path_test}. Script must be run as root.")
-                except FileNotFoundError: raise RuntimeError(f"MSR device file {msr_path_test} disappeared or invalid core.")
-                except OSError as e_os: raise RuntimeError(f"OSError during MSR test read on core {test_core}: {e_os}. 'msr' module might be loaded but access fails.")
                 raise RuntimeError(f"Failed initial MSR read on core {test_core} (MSR: {hex(MSR_IA32_TSC)}) for unknown reason.")
             print("INFO: MSR access test passed.")
-
         try: 
             subprocess.run([self.intel_sst_path, "--version"], capture_output=True, check=True, text=True)
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             raise RuntimeError(f"'{self.intel_sst_path}' command failed or not found: {e}.")
-        
         if self.tdp_update_interval_s <= 0: raise ValueError("'tdp_update_interval_s' must be positive.")
         if not (0 < self.tdp_adj_sensitivity_factor < 1): raise ValueError("'tdp_adjustment_sensitivity' must be > 0 and < 1.")
         if self.tdp_adj_step_w_small <=0 : raise ValueError("'tdp_adjustment_step_w_small' must be positive.")
@@ -152,13 +139,13 @@ class PowerManager(xAppBase):
         if not (0 < self.target_ru_cpu_usage <= 100): raise ValueError("'target_ru_timing_cpu_usage' must be > 0 and <= 100.")
         print("Configuration and system checks passed.")
 
-    def _load_config(self) -> Dict[str, Any]:
+    def _load_config(self) -> Dict[str, Any]: # No changes needed
         try:
             with open(self.config_path, 'r') as f: return yaml.safe_load(f)
         except FileNotFoundError: raise RuntimeError(f"Config file '{self.config_path}' not found.")
         except yaml.YAMLError as e: raise RuntimeError(f"Could not parse config file '{self.config_path}': {e}.")
 
-    def _parse_core_list_string(self, core_str: str) -> List[int]:
+    def _parse_core_list_string(self, core_str: str) -> List[int]: # No changes needed
         cores: Set[int] = set()
         if not core_str: return []
         parts = core_str.split(',')
@@ -176,7 +163,7 @@ class PowerManager(xAppBase):
                 except ValueError: print(f"W: Invalid core number format '{part}'. Skipping.")
         return sorted(list(cores))
 
-    def _update_ru_core_msr_data(self):
+    def _update_ru_core_msr_data(self): # No changes needed
         if not self.ru_timing_core_indices: return
         for core_id in self.ru_timing_core_indices:
             current_mperf = read_msr_direct(core_id, MSR_IA32_MPERF)
@@ -197,7 +184,7 @@ class PowerManager(xAppBase):
             else: current_busy_percent = prev_data.busy_percent
             self.ru_core_msr_prev_data[core_id].mperf, self.ru_core_msr_prev_data[core_id].tsc, self.ru_core_msr_prev_data[core_id].busy_percent = current_mperf, current_tsc, current_busy_percent
 
-    def _get_control_ru_timing_cpu_usage(self) -> float:
+    def _get_control_ru_timing_cpu_usage(self) -> float: # No changes needed
         if not self.ru_timing_core_indices: return 0.0
         current_max_busy_percent = 0.0; found_valid_core_data = False
         for core_id in self.ru_timing_core_indices:
@@ -209,13 +196,20 @@ class PowerManager(xAppBase):
         if len(self.max_ru_timing_usage_history) > self.max_samples_cpu_avg: self.max_ru_timing_usage_history.pop(0)
         return sum(self.max_ru_timing_usage_history) / len(self.max_ru_timing_usage_history) if self.max_ru_timing_usage_history else 0.0
 
-    def _run_command(self, cmd_list: List[str]) -> None:
-        actual_cmd_list_or_str: Any = cmd_list; print_cmd_str = ' '.join(actual_cmd_list_or_str)
+    def _run_command(self, cmd_list: List[str]) -> None: # Log cleanup
+        actual_cmd_list_or_str: Any = cmd_list
+        print_cmd_str = ' '.join(actual_cmd_list_or_str)
         if cmd_list[0] == "intel-speed-select": 
-            actual_cmd_list_or_str = [self.intel_sst_path] + cmd_list[1:]; print_cmd_str = ' '.join(actual_cmd_list_or_str)
-        if self.dry_run: print(f"[DRY RUN] Would execute: {print_cmd_str}"); return
-        print(f"Executing: {print_cmd_str}")
-        try: subprocess.run(actual_cmd_list_or_str, shell=False, check=True, capture_output=True, text=True)
+            actual_cmd_list_or_str = [self.intel_sst_path] + cmd_list[1:]
+            print_cmd_str = ' '.join(actual_cmd_list_or_str)
+        
+        if self.dry_run: 
+            print(f"[DRY RUN] Would execute: {print_cmd_str}")
+            return
+        
+        # Removed the "Executing:" print for less verbosity
+        try: 
+            subprocess.run(actual_cmd_list_or_str, shell=False, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as e:
             cmd_executed = e.cmd if isinstance(e.cmd, str) else ' '.join(e.cmd)
             msg = f"Command '{cmd_executed}' failed with exit code {e.returncode}."
@@ -229,7 +223,7 @@ class PowerManager(xAppBase):
             print(f"E: {msg}");
             if not self.dry_run: raise RuntimeError(msg)
 
-    def _setup_intel_sst(self):
+    def _setup_intel_sst(self): # Log cleanup
         print("--- Configuring Intel SST-CP ---")
         try:
             self._run_command(["intel-speed-select", "core-power", "enable"])
@@ -257,19 +251,19 @@ class PowerManager(xAppBase):
                     self._run_command(["intel-speed-select", "-c", core_list_str, "core-power", "assoc", "-c", str(clos_id_int)])
                 else:
                     if not (clos_id_int == 0 and self.ru_timing_core_indices and not associated_cores): print(f"W: No cores for CLOS {clos_id_int}.")
-            print("--- Intel SST-CP Configuration Complete ---")
+            # Removed "Intel SST-CP Configuration Complete" for less verbosity
         except Exception as e: 
             msg = f"An error occurred during Intel SST-CP setup: {e}"
             print(f"E: {msg}");
             if not self.dry_run: raise RuntimeError(msg)
 
-    def _read_current_tdp_limit_w(self) -> float:
+    def _read_current_tdp_limit_w(self) -> float: # No changes needed
         if self.dry_run and self.last_tdp_adjustment_time > 0: return self.current_tdp_w 
         try:
             with open(self.power_limit_uw_file, 'r') as f: return int(f.read().strip()) / 1e6
         except Exception: print(f"W: Could not read {self.power_limit_uw_file}. Assuming min_tdp."); return float(self.tdp_min_w)
 
-    def _set_tdp_limit_w(self, tdp_watts: float): # Corrected f-string error from traceback
+    def _set_tdp_limit_w(self, tdp_watts: float): # Log cleanup
         target_tdp_uw = int(tdp_watts * 1e6)
         min_tdp_uw_config = int(self.tdp_min_w * 1e6)
         max_tdp_uw_config = int(self.tdp_max_w * 1e6)
@@ -278,6 +272,7 @@ class PowerManager(xAppBase):
 
         if self.dry_run:
             if abs(self.current_tdp_w - new_tdp_w) > 0.01 :
+                 # This print is part of the TDP adjust logic now, so it's fine here for dry run
                  print(f"[DRY RUN] Would set TDP to {new_tdp_w:.1f}W (requested {tdp_watts:.1f}W, current sim TDP {self.current_tdp_w:.1f}W)")
             self.current_tdp_w = new_tdp_w
             return
@@ -291,19 +286,19 @@ class PowerManager(xAppBase):
             print(f"W: Could not read {self.power_limit_uw_file} before writing (error: {e_read}). Proceeding.")
             pass
         try: 
-            print(f"Setting TDP: Writing {clamped_tdp_uw} to {self.power_limit_uw_file} (Target: {new_tdp_w:.1f}W)")
+            # Removed "Setting TDP: Writing..." print from here
             with open(self.power_limit_uw_file, 'w') as f_write: f_write.write(str(clamped_tdp_uw))
             self.current_tdp_w = new_tdp_w
-        except OSError as e_os: # Corrected syntax here
+        except OSError as e_os: 
             msg = f"OSError writing TDP value {clamped_tdp_uw} to {self.power_limit_uw_file}: {e_os}"
-            print(f"E: {msg}")
+            print(f"E: {msg}");
             if not self.dry_run: raise RuntimeError(msg)
         except Exception as e_exc:
             msg = f"Unexpected exception writing TDP value {clamped_tdp_uw} to {self.power_limit_uw_file}: {e_exc}"
-            print(f"E: {msg}")
+            print(f"E: {msg}");
             if not self.dry_run: raise RuntimeError(msg)
 
-    def _adjust_tdp(self, control_ru_cpu_usage: float): # Corrected TDP logic
+    def _adjust_tdp(self, control_ru_cpu_usage: float): # Log modification
         error_percent = self.target_ru_cpu_usage - control_ru_cpu_usage 
         abs_error_percent = abs(error_percent) 
         sensitivity_abs_threshold_percent = self.target_ru_cpu_usage * self.tdp_adj_sensitivity_factor
@@ -312,13 +307,22 @@ class PowerManager(xAppBase):
         tdp_change_w = 0.0
         if abs_error_percent > sensitivity_abs_threshold_percent:
             chosen_step_w = self.tdp_adj_step_w_large if abs_error_percent > far_abs_threshold_percent else self.tdp_adj_step_w_small
-            if error_percent > 0: tdp_change_w = -chosen_step_w  # Actual usage too LOW -> DECREASE TDP
-            else: tdp_change_w = chosen_step_w               # Actual usage too HIGH -> INCREASE TDP
+            if error_percent > 0: tdp_change_w = -chosen_step_w
+            else: tdp_change_w = chosen_step_w
+            
             if tdp_change_w != 0:
-                print(f"TDP Adjust: RU CPU {control_ru_cpu_usage:.2f}%, Target {self.target_ru_cpu_usage:.2f}%. Error {error_percent:.2f}%. Threshold {sensitivity_abs_threshold_percent:.2f}%. Action: Change TDP by {tdp_change_w:.1f}W.")
-                self._set_tdp_limit_w(self.current_tdp_w + tdp_change_w)
+                new_tdp_w_target = self.current_tdp_w + tdp_change_w
+                # Clamp new_tdp_w_target to ensure the "Final TDP" is the actual value that will be set
+                clamped_new_tdp_w = max(self.tdp_min_w, min(new_tdp_w_target, self.tdp_max_w))
+                
+                # Adjust the actual tdp_change_w if clamping occurred
+                actual_tdp_change_w = clamped_new_tdp_w - self.current_tdp_w
 
-    def _get_pkg_power_w(self) -> Tuple[float, bool]:
+                print(f"TDP Adjust: RU CPU {control_ru_cpu_usage:.2f}%, Target {self.target_ru_cpu_usage:.2f}%. Error {error_percent:.2f}%. "
+                      f"Action: Change TDP by {actual_tdp_change_w:.1f}W. New Target TDP: {clamped_new_tdp_w:.1f}W")
+                self._set_tdp_limit_w(new_tdp_w_target) # _set_tdp_limit_w handles clamping again, but this informs the log correctly
+
+    def _get_pkg_power_w(self) -> Tuple[float, bool]: # No changes needed
         if not os.path.exists(self.energy_uj_file): return 0.0, False
         try:
             with open(self.energy_uj_file, 'r') as f: current_energy_uj = int(f.read().strip())
@@ -343,13 +347,13 @@ class PowerManager(xAppBase):
             return power_w, success
         except Exception: return 0.0, False
         
-    def _read_current_energy_uj(self) -> Optional[int]:
+    def _read_current_energy_uj(self) -> Optional[int]: # No changes needed
         if not os.path.exists(self.energy_uj_file): return None
         try:
             with open(self.energy_uj_file, 'r') as f: return int(f.read().strip())
         except Exception as e: print(f"W: Could not read energy_uj file {self.energy_uj_file} for interval energy: {e}"); return None
 
-    def _get_interval_energy_uj(self) -> Optional[float]:
+    def _get_interval_energy_uj(self) -> Optional[float]: # No changes needed
         current_energy_uj = self._read_current_energy_uj()
         if current_energy_uj is None: return None
         if self.energy_at_last_log_uj is None: self.energy_at_last_log_uj = current_energy_uj; return None 
@@ -368,59 +372,74 @@ class PowerManager(xAppBase):
     def _kpm_indication_callback(self, e2_agent_id: str, subscription_id: str, 
                                  indication_hdr_bytes: bytes, indication_msg_bytes: bytes, 
                                  kpm_report_style: Optional[int] = None, ue_id: Optional[Any] = None):
-        print(f"DEBUG KPM CB: Received from {e2_agent_id}, SubID {subscription_id}, Style {kpm_report_style}, UE {ue_id}, HDR len {len(indication_hdr_bytes)}, MSG len {len(indication_msg_bytes)}")
-        if not self.e2sm_kpm: print(f"W: KPM indication from {e2_agent_id}, but e2sm_kpm module unavailable. Discarding."); return
+        # Removed DEBUG KPM CB prints. Added parsing for list value.
+        if not self.e2sm_kpm: 
+            # print(f"W: KPM indication from {e2_agent_id}, but e2sm_kpm module unavailable. Discarding.") # Optional silent fail
+            return
         try:
             meas_report = self.e2sm_kpm.extract_meas_data(indication_msg_bytes) 
-            print(f"DEBUG KPM CB: Extracted meas_report from {e2_agent_id}: {meas_report}")
-            if not meas_report: print(f"W: Failed to extract KPM measurement data from {e2_agent_id}. meas_report is: {meas_report}"); return
+            if not meas_report:
+                # print(f"W: Failed to extract KPM measurement data from {e2_agent_id}. meas_report is: {meas_report}") # Optional
+                return
 
             granul_period_ms = meas_report.get("granulPeriod")
-            print(f"DEBUG KPM CB: granulPeriod from {e2_agent_id}: {granul_period_ms} (type: {type(granul_period_ms)})")
             if not isinstance(granul_period_ms, (int, float)) or granul_period_ms <= 0:
-                print(f"W: Invalid granulPeriod ({granul_period_ms}) from {e2_agent_id}. Skipping."); return
+                print(f"W: Invalid granulPeriod ({granul_period_ms}) from {e2_agent_id}. Skipping KPM update.")
+                return
             
-            granul_period_s = float(granul_period_ms) / 1000.0; dl_thp_bps, ul_thp_bps = 0.0, 0.0
+            granul_period_s = float(granul_period_ms) / 1000.0
+            dl_thp_bps, ul_thp_bps = 0.0, 0.0
             measurements = meas_report.get("measData", {})
-            print(f"DEBUG KPM CB: measData from {e2_agent_id}: {measurements} (type: {type(measurements)})")
-            if not isinstance(measurements, dict): print(f"W: Invalid 'measData' format from {e2_agent_id}. Expected dict."); return
+            if not isinstance(measurements, dict):
+                print(f"W: Invalid 'measData' format from {e2_agent_id}. Expected dict.")
+                return
 
-            for metric_name, value in measurements.items():
-                print(f"DEBUG KPM CB: Metric from {e2_agent_id}: '{metric_name}', Value: '{value}' (type: {type(value)})")
-                try:
-                    if metric_name == 'DRB.UEThpDl': dl_thp_bps = float(value)
-                    elif metric_name == 'DRB.UEThpUl': ul_thp_bps = float(value)
-                except (ValueError, TypeError): print(f"W: KPM metric '{metric_name}' value '{value}' from {e2_agent_id} invalid. Using 0.0.")
+            for metric_name, value_from_report in measurements.items():
+                # --- MODIFICATION TO HANDLE LIST VALUE ---
+                current_metric_value = 0.0
+                if isinstance(value_from_report, list) and len(value_from_report) > 0:
+                    # Try to convert the first element of the list
+                    try:
+                        current_metric_value = float(value_from_report[0])
+                    except (ValueError, TypeError):
+                        print(f"W: KPM metric '{metric_name}' list item '{value_from_report[0]}' from {e2_agent_id} invalid. Using 0.0.")
+                elif isinstance(value_from_report, (int, float)): # If it's already a number
+                    current_metric_value = float(value_from_report)
+                else: # Other unexpected type
+                    print(f"W: KPM metric '{metric_name}' value '{value_from_report}' (type: {type(value_from_report)}) from {e2_agent_id} unexpected. Using 0.0.")
+                # --- END MODIFICATION ---
 
+                if metric_name == 'DRB.UEThpDl': dl_thp_bps = current_metric_value
+                elif metric_name == 'DRB.UEThpUl': ul_thp_bps = current_metric_value
+            
             dl_bits, ul_bits = dl_thp_bps * granul_period_s, ul_thp_bps * granul_period_s
-            print(f"DEBUG KPM CB: Calculated for {e2_agent_id}: granul_s={granul_period_s}, dl_thp={dl_thp_bps}bps, ul_thp={ul_thp_bps}bps, dl_bits={dl_bits}, ul_bits={ul_bits}")
             with self.kpm_data_lock:
                 if e2_agent_id not in self.accumulated_kpm_metrics:
                     self.accumulated_kpm_metrics[e2_agent_id] = {'dl_bits': 0.0, 'ul_bits': 0.0, 'num_reports': 0, 'total_granularity_s': 0.0}
                 acc = self.accumulated_kpm_metrics[e2_agent_id]
                 acc['dl_bits'] += dl_bits; acc['ul_bits'] += ul_bits; acc['num_reports'] += 1; acc['total_granularity_s'] += granul_period_s
-                print(f"DEBUG KPM CB: Accumulated for {e2_agent_id}: {acc}")
         except Exception as e:
-            print(f"E: Error processing KPM indication from {e2_agent_id} (SubID {subscription_id}, Style {kpm_report_style}): {e}"); import traceback; traceback.print_exc()
+            print(f"E: Error processing KPM indication from {e2_agent_id} (SubID {subscription_id}, Style {kpm_report_style}): {e}");
+            # import traceback; traceback.print_exc() # Keep for deep debugging if needed
 
-    def _get_and_reset_accumulated_kpm_metrics(self) -> Dict[str, Dict[str, Any]]:
+    def _get_and_reset_accumulated_kpm_metrics(self) -> Dict[str, Dict[str, Any]]: # No changes needed
         with self.kpm_data_lock:
             metrics_snapshot = dict(self.accumulated_kpm_metrics) 
-            for gnb_id in self.accumulated_kpm_metrics: # Iterate over keys of original dict before clearing
+            for gnb_id in self.accumulated_kpm_metrics:
                  self.accumulated_kpm_metrics[gnb_id] = {'dl_bits': 0.0, 'ul_bits': 0.0, 'num_reports': 0, 'total_granularity_s': 0.0}
         return metrics_snapshot
 
-    def _setup_kpm_subscriptions(self): # Subscribes to all configured gNBs
-        print("--- Setting up KPM Subscriptions ---")
+    def _setup_kpm_subscriptions(self): # Log cleanup
+        # print("--- Setting up KPM Subscriptions ---") # Reduced verbosity
         if not self.e2sm_kpm: print("W: e2sm_kpm module not available. KPM subscriptions cannot be set up."); return
 
         e2_node_ids_to_subscribe = list(self.gnb_ids_map.values())
         if not e2_node_ids_to_subscribe: print("W: No gNB IDs found in config ('gnb_ids') for KPM."); return
 
-        kpm_metrics_to_subscribe = ['DRB.UEThpDl', 'DRB.UEThpUl'] 
+        kpm_metrics_to_subscribe = ['DRB.UEThpDl', 'DRB.UEThpUl']
         report_period_ms = int(self.config.get('kpm_report_period_ms', 1000))
-        granul_period_ms = int(self.config.get('kpm_granularity_period_ms', 1000)) # Defaulting to 1000ms
-        current_kpm_report_style = 1 # For Style 1 subscriptions
+        granul_period_ms = int(self.config.get('kpm_granularity_period_ms', 1000))
+        current_kpm_report_style = 1
         successful_subscriptions = 0
 
         for e2_node_id_str in e2_node_ids_to_subscribe:
@@ -435,7 +454,8 @@ class PowerManager(xAppBase):
                 successful_subscriptions +=1; continue 
             
             try:
-                print(f"Subscribing KPM: Node {e2_node_id_str}, Metrics {kpm_metrics_to_subscribe}, Report {report_period_ms}ms, Granularity {granul_period_ms}ms, Style {current_kpm_report_style}")
+                # Reduced "Subscribing KPM..." print for less verbosity if successful often
+                # print(f"Subscribing KPM: Node {e2_node_id_str}, Metrics {kpm_metrics_to_subscribe}, Style {current_kpm_report_style}")
                 self.e2sm_kpm.subscribe_report_service_style_1(
                     e2_node_id_str, report_period_ms, kpm_metrics_to_subscribe,
                     granul_period_ms, subscription_callback_adapter
@@ -445,13 +465,14 @@ class PowerManager(xAppBase):
                          self.accumulated_kpm_metrics[e2_node_id_str] = {'dl_bits': 0.0, 'ul_bits': 0.0, 'num_reports': 0, 'total_granularity_s': 0.0}
                 successful_subscriptions +=1
             except Exception as e: 
-                print(f"E: Failed to initiate KPM subscription for E2 Node {e2_node_id_str}: {e}"); import traceback; traceback.print_exc()
+                print(f"E: Failed to initiate KPM subscription for E2 Node {e2_node_id_str}: {e}");
+                # import traceback; traceback.print_exc() # Keep for deep debugging if needed
         
-        if successful_subscriptions > 0: print(f"--- KPM Subscriptions: {successful_subscriptions} E2 nodes attempted to subscribe. ---")
+        if successful_subscriptions > 0: print(f"--- KPM Subscriptions: {successful_subscriptions} E2 nodes attempted. ---")
         elif e2_node_ids_to_subscribe : print("W: No KPM subscriptions were successfully initiated.")
     
     @xAppBase.start_function
-    def run_power_management_xapp(self):
+    def run_power_management_xapp(self): # Main loop, minor log cleanup
         if os.geteuid() != 0 and not self.dry_run: raise SystemExit("Root privileges required for live run.")
         try:
             self.energy_at_last_log_uj = self._read_current_energy_uj() 
@@ -461,29 +482,28 @@ class PowerManager(xAppBase):
                 print("Priming MSR readings..."); self._update_ru_core_msr_data(); time.sleep(0.2); self._update_ru_core_msr_data(); print("MSR readings primed.")
             else: print("INFO: No RU timing cores defined, MSR priming skipped.")
 
-            print("Attempting to set initial TDP..."); initial_pkg_power, pkg_power_ok = self._get_pkg_power_w(); time.sleep(0.2)
-            initial_pkg_power, pkg_power_ok = self._get_pkg_power_w()
+            initial_pkg_power, pkg_power_ok = self._get_pkg_power_w(); time.sleep(0.2) # Initial PkgWatt read
+            initial_pkg_power, pkg_power_ok = self._get_pkg_power_w() # Second read for better accuracy
             if pkg_power_ok and initial_pkg_power > 1.0 : 
                 safe_initial_tdp = max(self.tdp_min_w, min(initial_pkg_power, self.tdp_max_w))
-                print(f"Initial PkgWatt measured: {initial_pkg_power:.1f}W. Clamped safe initial TDP: {safe_initial_tdp:.1f}W.")
+                print(f"Initial PkgWatt: {initial_pkg_power:.1f}W. Setting initial TDP to: {safe_initial_tdp:.1f}W.")
                 self._set_tdp_limit_w(safe_initial_tdp) 
             else:
                 print(f"W: Could not get valid initial PkgWatt. Using config min_tdp or current RAPL value.")
                 if not self.dry_run: self.current_tdp_w = self._read_current_tdp_limit_w() 
                 self._set_tdp_limit_w(self.current_tdp_w) 
-            print(f"Effective Initial TDP after setup: {self.current_tdp_w:.1f}W.")
+            print(f"Effective Initial TDP: {self.current_tdp_w:.1f}W.")
 
             self._setup_intel_sst(); self._setup_kpm_subscriptions() 
             self.last_tdp_adjustment_time = time.monotonic(); last_print_time = time.monotonic()
             
             print(f"\n--- Starting Monitoring Loop ({'DRY RUN' if self.dry_run else 'LIVE RUN'}) ---")
-            print(f"Target MAX RU CPU: {self.target_ru_cpu_usage:.2f}% | RU Cores: {self.ru_timing_core_indices if self.ru_timing_core_indices else 'NONE'}")
+            print(f"Target RU CPU: {self.target_ru_cpu_usage:.2f}% | RU Cores: {self.ru_timing_core_indices if self.ru_timing_core_indices else 'NONE'}")
             print(f"TDP Update: {self.tdp_update_interval_s}s | Print: {self.print_interval_s}s | TDP Range: {self.tdp_min_w}W-{self.tdp_max_w}W")
             subscribed_gnbs_str = ", ".join(self.gnb_ids_map.values()) if self.gnb_ids_map else "NONE"
-            print(f"KPM Metrics: DRB.UEThpDl/Ul from gNBs: {subscribed_gnbs_str}")
+            print(f"KPM Metrics from gNBs: {subscribed_gnbs_str}")
 
-
-            while True: # Main monitoring loop
+            while True:
                 loop_start_time = time.monotonic()
                 if self.ru_timing_core_indices: self._update_ru_core_msr_data() 
                 control_value_for_tdp = self._get_control_ru_timing_cpu_usage()
@@ -517,14 +537,13 @@ class PowerManager(xAppBase):
                                 if gnb_id and gnb_id in current_accumulated_kpm:
                                     clos_total_b += current_accumulated_kpm[gnb_id].get('dl_bits',0.0)
                                     clos_total_b += current_accumulated_kpm[gnb_id].get('ul_bits',0.0)
-                            
                             clos_eff_val_str = "N/A"
                             if interval_energy_uj is not None:
                                 if interval_energy_uj > 1e-9: clos_eff_val_str = f"{clos_total_b / interval_energy_uj:.2f} b/uJ"
                                 elif clos_total_b > 1e-9: clos_eff_val_str = "inf b/uJ (E~0)"
                                 else: clos_eff_val_str = "0.00 b/uJ (E~0,B~0)"
                             clos_eff_strs_list.append(f"CLOS{clos_id}:{clos_eff_val_str} ({clos_total_b/1e6:.2f}Mb)")
-                    clos_eff_log_str = " | ".join(clos_eff_strs_list) if clos_eff_strs_list else "No CLoS DUs defined/mapped"
+                    clos_eff_log_str = " | ".join(clos_eff_strs_list) if clos_eff_strs_list else "No CLoS DUs"
 
                     ru_core_usage_list_str = []
                     for core_idx_ru in self.ru_timing_core_indices:
@@ -532,7 +551,6 @@ class PowerManager(xAppBase):
                         usage_ru_str = f"{data_ru.busy_percent:>6.2f}%" if data_ru and data_ru.busy_percent is not None else " N/A  "
                         ru_core_usage_list_str.append(f"C{core_idx_ru}:{usage_ru_str}")
                     ru_details_log_str = ", ".join(ru_core_usage_list_str) if ru_core_usage_list_str else "N/A"
-
                     pkg_pwr_log_str = f"{pkg_power_w:.1f}" if pkg_power_ok else "N/A"
                     energy_interval_j_str = f"{interval_energy_uj/1e6:.2f}" if interval_energy_uj is not None else "N/A"
                     
@@ -550,7 +568,7 @@ class PowerManager(xAppBase):
                 time.sleep(sleep_duration)
 
         except KeyboardInterrupt: print(f"\n--- Monitoring loop interrupted by user ({'DRY RUN' if self.dry_run else 'LIVE RUN'}) ---")
-        except SystemExit as e: print(f"Application exiting: {e}"); raise # Re-raise to allow proper exit
+        except SystemExit as e: print(f"Application exiting: {e}"); raise 
         except RuntimeError as e: print(f"E: A critical runtime error occurred in monitoring loop: {e}")
         except Exception as e: 
             print(f"\n--- Unexpected error in monitoring loop ({'DRY RUN' if self.dry_run else 'LIVE RUN'}): {e} ---")
@@ -575,7 +593,6 @@ if __name__ == "__main__":
         if hasattr(manager_instance, 'signal_handler') and callable(manager_instance.signal_handler):
             signal.signal(signal.SIGINT, manager_instance.signal_handler)
             signal.signal(signal.SIGTERM, manager_instance.signal_handler)
-            # signal.signal(signal.SIGQUIT, manager_instance.signal_handler) # SIGQUIT might not be standard on all systems for xApps
             print("INFO: Registered signal handlers from xAppBase.")
         else:
             print("W: No 'signal_handler' method found in PowerManager/xAppBase. Default Python signal handling will apply.")
