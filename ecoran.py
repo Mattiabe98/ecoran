@@ -224,8 +224,6 @@ class PowerManager(xAppBase):
         except yaml.YAMLError as e: print(f"E: Could not parse config file '{self.config_path}': {e}. Exiting."); sys.exit(1)
 
     def _parse_core_list_string(self, core_str: str) -> List[int]:
-
-    def _parse_core_list_string(self, core_str: str) -> List[int]:
         cores: Set[int] = set();
         if not core_str: return []
         for part_raw in core_str.split(','):
