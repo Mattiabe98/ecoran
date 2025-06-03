@@ -54,11 +54,7 @@ class CoreMSRData:
         self.busy_percent: float = 0.0
 
 class PowerManager(xAppBase):
-    # Adjust this based on your E2 node's KPM counter specification for RLC SDU Volume (in bytes)
-    # Example: If it's a 32-bit counter for bytes:
-    MAX_VOLUME_COUNTER_BYTES = (2**32) - 1 
-    # If it's a 64-bit counter for bytes:
-    # MAX_VOLUME_COUNTER_BYTES = (2**64) - 1 
+    MAX_VOLUME_COUNTER_BYTES = (2**32) - 1 # Adjust if your counter size is different (e.g., 2**64 - 1)
 
     def __init__(self, config_path: str, http_server_port: int, rmr_port: int, kpm_ran_func_id: int = 2):
         self.config_path = config_path
@@ -130,7 +126,7 @@ class PowerManager(xAppBase):
             elif level > SILENT : print(f"{time.strftime('%H:%M:%S')} {level_map.get(level, f'LVL{level}:')} {message}")
             elif level == SILENT and self.verbosity == SILENT: pass
 
-    def _validate_config(self): # Critical startup errors use print()
+    def _validate_config(self):
         if not os.path.exists(self.rapl_base_path) or not os.path.exists(self.power_limit_uw_file):
             print(f"E: RAPL path {self.rapl_base_path} or power limit file missing. Exiting."); sys.exit(1) 
         if not os.path.exists(self.energy_uj_file):
@@ -150,16 +146,22 @@ class PowerManager(xAppBase):
             self._log(INFO, "MSR access test passed.")
         try: subprocess.run([self.intel_sst_path, "--version"], capture_output=True, check=True, text=True)
         except Exception as e: print(f"E: '{self.intel_sst_path}' command failed: {e}. Exiting."); sys.exit(1)
-        # ... (Other critical parameter checks with print + sys.exit for brevity) ...
+        if self.tdp_update_interval_s <= 0: print(f"E: 'tdp_update_interval_s' must be positive. Exiting."); sys.exit(1)
+        if not (0 < self.tdp_adj_sensitivity_factor < 1): print(f"E: 'tdp_adjustment_sensitivity' must be > 0 and < 1. Exiting."); sys.exit(1)
+        if self.tdp_adj_step_w_small <=0 : print(f"E: 'tdp_adjustment_step_w_small' must be positive. Exiting."); sys.exit(1)
+        if self.tdp_adj_step_w_large <=0 : print(f"E: 'tdp_adjustment_step_w_large' must be positive. Exiting."); sys.exit(1)
+        if self.adaptive_step_far_thresh_factor <=1.0 : print(f"E: 'adaptive_step_far_threshold_factor' must be > 1.0. Exiting."); sys.exit(1)
+        if self.max_samples_cpu_avg <=0 : print(f"E: 'max_cpu_usage_samples' must be positive. Exiting."); sys.exit(1)
+        if not (0 < self.target_ru_cpu_usage <= 100): print(f"E: 'target_ru_timing_cpu_usage' must be > 0 and <= 100. Exiting."); sys.exit(1)
         self._log(INFO, "Configuration and system checks passed.")
 
-    def _load_config(self) -> Dict[str, Any]: # Critical, use print
+    def _load_config(self) -> Dict[str, Any]:
         try:
             with open(self.config_path, 'r') as f: return yaml.safe_load(f)
         except FileNotFoundError: print(f"E: Config file '{self.config_path}' not found. Exiting."); sys.exit(1)
         except yaml.YAMLError as e: print(f"E: Could not parse config file '{self.config_path}': {e}. Exiting."); sys.exit(1)
 
-    def _parse_core_list_string(self, core_str: str) -> List[int]: # Unchanged
+    def _parse_core_list_string(self, core_str: str) -> List[int]:
         cores: Set[int] = set();
         if not core_str: return []
         for part_raw in core_str.split(','):
@@ -173,7 +175,7 @@ class PowerManager(xAppBase):
                 except ValueError: self._log(WARN, f"Invalid core number '{part}'.")
         return sorted(list(cores))
 
-    def _update_ru_core_msr_data(self): # Internal logic
+    def _update_ru_core_msr_data(self):
         if not self.ru_timing_core_indices: return
         for core_id in self.ru_timing_core_indices:
             mperf, tsc = read_msr_direct(core_id, MSR_IA32_MPERF), read_msr_direct(core_id, MSR_IA32_TSC)
@@ -189,7 +191,7 @@ class PowerManager(xAppBase):
             else: busy = prev.busy_percent
             prev.mperf, prev.tsc, prev.busy_percent = mperf, tsc, busy
 
-    def _get_control_ru_timing_cpu_usage(self) -> float: # Internal logic
+    def _get_control_ru_timing_cpu_usage(self) -> float:
         if not self.ru_timing_core_indices: return 0.0
         max_busy = 0.0; valid_data = False
         for core_id in self.ru_timing_core_indices:
@@ -200,43 +202,47 @@ class PowerManager(xAppBase):
         if len(self.max_ru_timing_usage_history) > self.max_samples_cpu_avg: self.max_ru_timing_usage_history.pop(0)
         return sum(self.max_ru_timing_usage_history) / len(self.max_ru_timing_usage_history) if self.max_ru_timing_usage_history else 0.0
 
-    def _run_command(self, cmd_list: List[str]) -> None: # Uses self._log
-        cmd_str = [self.intel_sst_path] + cmd_list[1:] if cmd_list[0] == "intel-speed-select" else cmd_list
-        printable_cmd = ' '.join(cmd_str)
+    def _run_command(self, cmd_list: List[str]) -> None:
+        cmd_str_list = [self.intel_sst_path] + cmd_list[1:] if cmd_list[0] == "intel-speed-select" else cmd_list
+        printable_cmd = ' '.join(cmd_str_list)
         if self.dry_run: self._log(INFO, f"[DRY RUN] Would execute: {printable_cmd}"); return
         self._log(DEBUG_ALL, f"Executing: {printable_cmd}")
-        try: subprocess.run(cmd_str, shell=False, check=True, capture_output=True, text=True)
+        try: subprocess.run(cmd_str_list, shell=False, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as e:
             msg = f"Cmd '{e.cmd}' failed ({e.returncode}). STDOUT: {e.stdout.strip()} STDERR: {e.stderr.strip()}"
             self._log(ERROR, msg);
             if not self.dry_run: raise RuntimeError(msg)
         except FileNotFoundError:
-            msg = f"Cmd '{cmd_str[0]}' not found."
+            msg = f"Cmd '{cmd_str_list[0]}' not found."
             self._log(ERROR, msg);
             if not self.dry_run: raise RuntimeError(msg)
 
-    def _setup_intel_sst(self): # Uses self._log
+    def _setup_intel_sst(self):
         self._log(INFO, "--- Configuring Intel SST-CP ---")
         try:
             self._run_command(["intel-speed-select", "core-power", "enable"])
             for cid, freq in self.config.get('clos_min_frequency', {}).items(): self._run_command(["intel-speed-select", "core-power", "config", "-c", str(cid), "--min", str(freq)])
             ran_cores = {n: self._parse_core_list_string(str(cs)) for n, cs in self.config.get('ran_cores', {}).items()}
-            for cid, comps in self.config.get('clos_association', {}).items():
+            for cid_key, comps in self.config.get('clos_association', {}).items():
+                cid = int(cid_key)
                 assoc_cores = set(c for comp in comps if isinstance(comps,list) for c in ran_cores.get(comp,[]))
-                if int(cid) == 0 and self.ru_timing_core_indices: assoc_cores.update(self.ru_timing_core_indices)
+                if cid == 0 and self.ru_timing_core_indices: assoc_cores.update(self.ru_timing_core_indices)
                 if assoc_cores: self._run_command(["intel-speed-select", "-c", ",".join(map(str, sorted(list(assoc_cores)))), "core-power", "assoc", "-c", str(cid)])
-                elif int(cid) == 0 and self.ru_timing_core_indices and not comps: self._run_command(["intel-speed-select", "-c", ",".join(map(str, sorted(self.ru_timing_core_indices))), "core-power", "assoc", "-c", str(cid)])
+                elif cid == 0 and self.ru_timing_core_indices and not comps: self._run_command(["intel-speed-select", "-c", ",".join(map(str, sorted(self.ru_timing_core_indices))), "core-power", "assoc", "-c", str(cid)])
                 else: self._log(WARN, f"No cores for CLOS {cid}.")
             self._log(INFO, "--- Intel SST-CP Configuration Complete ---")
-        except Exception as e: self._log(ERROR, f"Intel SST-CP setup error: {e}"); if not self.dry_run: raise RuntimeError(str(e))
+        except Exception as e: 
+            self._log(ERROR, f"Intel SST-CP setup error: {e}") # Corrected line
+            if not self.dry_run: 
+                raise RuntimeError(str(e))
 
-    def _read_current_tdp_limit_w(self) -> float: # Uses self._log
+    def _read_current_tdp_limit_w(self) -> float:
         if self.dry_run and self.last_tdp_adjustment_time > 0: return self.current_tdp_w 
         try:
             with open(self.power_limit_uw_file, 'r') as f: return int(f.read().strip()) / 1e6
         except Exception: self._log(WARN, f"Could not read {self.power_limit_uw_file}. Assuming min_tdp."); return float(self.tdp_min_w)
 
-    def _set_tdp_limit_w(self, tdp_watts: float, context: str = ""): # Uses self._log and cleaned up message
+    def _set_tdp_limit_w(self, tdp_watts: float, context: str = ""):
         clamped_uw = max(int(self.tdp_min_w*1e6), min(int(tdp_watts*1e6), int(self.tdp_max_w*1e6)))
         new_tdp_w = clamped_uw / 1e6
         if self.dry_run:
@@ -256,7 +262,7 @@ class PowerManager(xAppBase):
         except OSError as e: self._log(ERROR, f"OSError writing TDP to {self.power_limit_uw_file}: {e}"); if not self.dry_run: raise RuntimeError(str(e))
         except Exception as e: self._log(ERROR, f"Exception writing TDP: {e}"); if not self.dry_run: raise RuntimeError(str(e))
 
-    def _adjust_tdp(self, control_ru_cpu_usage: float): # Uses self._log via _set_tdp_limit_w
+    def _adjust_tdp(self, control_ru_cpu_usage: float):
         error = self.target_ru_cpu_usage - control_ru_cpu_usage; abs_error = abs(error) 
         sens_thresh = self.target_ru_cpu_usage * self.tdp_adj_sensitivity_factor
         far_thresh = sens_thresh * self.adaptive_step_far_thresh_factor
@@ -267,7 +273,7 @@ class PowerManager(xAppBase):
                 ctx = f"TDP Adjust: RU CPU {control_ru_cpu_usage:.2f}%, Target {self.target_ru_cpu_usage:.2f}%. Error {error:.2f}%. Action: TDP by {change:.1f}W"
                 self._set_tdp_limit_w(self.current_tdp_w + change, context=ctx)
 
-    def _get_pkg_power_w(self) -> Tuple[float, bool]: # Internal, uses self._log for debug
+    def _get_pkg_power_w(self) -> Tuple[float, bool]:
         if not os.path.exists(self.energy_uj_file): return 0.0, False
         try:
             with open(self.energy_uj_file, 'r') as f: current_e_uj = int(f.read().strip())
@@ -279,7 +285,9 @@ class PowerManager(xAppBase):
                     if de < 0: 
                         max_r = self.max_energy_val_rapl
                         try: 
-                            with open(os.path.join(self.rapl_base_path, "max_energy_range_uj"),'r') as f: max_r = max(max_r, int(f.read().strip()))
+                            with open(os.path.join(self.rapl_base_path, "max_energy_range_uj"),'r') as f_max_r: 
+                                max_r_val = int(f_max_r.read().strip())
+                                if max_r_val > 0: max_r = max_r_val # Use if valid
                         except Exception: pass
                         de += max_r
                     pwr_w = (de / 1e6) / dt
@@ -289,13 +297,13 @@ class PowerManager(xAppBase):
             return pwr_w, ok
         except Exception as e: self._log(WARN, f"Exception in _get_pkg_power_w: {e}"); return 0.0, False
         
-    def _read_current_energy_uj(self) -> Optional[int]: # Uses self._log
+    def _read_current_energy_uj(self) -> Optional[int]:
         if not os.path.exists(self.energy_uj_file): return None
         try:
             with open(self.energy_uj_file, 'r') as f: return int(f.read().strip())
         except Exception as e: self._log(WARN, f"Could not read {self.energy_uj_file}: {e}"); return None
 
-    def _get_interval_energy_uj(self) -> Optional[float]: # Uses self._log
+    def _get_interval_energy_uj(self) -> Optional[float]:
         curr_e_uj = self._read_current_energy_uj()
         if curr_e_uj is None: return None
         if self.energy_at_last_log_uj is None: self.energy_at_last_log_uj = curr_e_uj; return None 
@@ -303,7 +311,9 @@ class PowerManager(xAppBase):
         if delta_e < 0: 
             max_r = self.max_energy_val_rapl
             try:
-                with open(os.path.join(self.rapl_base_path,"max_energy_range_uj"),'r') as f: max_r = max(max_r, int(f.read().strip()))
+                with open(os.path.join(self.rapl_base_path,"max_energy_range_uj"),'r') as f_max_r: 
+                    max_r_val = int(f_max_r.read().strip())
+                    if max_r_val > 0: max_r = max_r_val
             except Exception as e: self._log(WARN, f"Could not read max_energy_range_uj: {e}"); pass 
             delta_e += max_r
         self.energy_at_last_log_uj = curr_e_uj
@@ -343,8 +353,8 @@ class PowerManager(xAppBase):
                                                                  'num_reports_processed':1 }
                     self._log(DEBUG_KPM, f"KPM CB (Volume): Initialized for {e2_agent_id} with DLVol:{current_dl_volume_bytes}, ULVol:{current_ul_volume_bytes}")
                 else: 
-                    prev_dl = acc_data.get('prev_dl_volume', current_dl_volume_bytes) # Default to current if somehow None
-                    prev_ul = acc_data.get('prev_ul_volume', current_ul_volume_bytes) # Default to current if somehow None
+                    prev_dl = acc_data.get('prev_dl_volume', current_dl_volume_bytes) 
+                    prev_ul = acc_data.get('prev_ul_volume', current_ul_volume_bytes)
                     
                     delta_dl_bytes = current_dl_volume_bytes - prev_dl
                     delta_ul_bytes = current_ul_volume_bytes - prev_ul
@@ -370,11 +380,11 @@ class PowerManager(xAppBase):
         with self.kpm_data_lock:
             snap = {gnb_id: {'dl_bits': data['dl_bits_interval_sum'], 'ul_bits': data['ul_bits_interval_sum']} 
                     for gnb_id, data in self.accumulated_kpm_metrics.items()}
-            for data in self.accumulated_kpm_metrics.values(): # Reset sums
+            for data in self.accumulated_kpm_metrics.values():
                 data['dl_bits_interval_sum'] = 0.0; data['ul_bits_interval_sum'] = 0.0; data['num_reports_processed'] = 0
         return snap
 
-    def _setup_kpm_subscriptions(self): # Uses self._log
+    def _setup_kpm_subscriptions(self):
         self._log(INFO, "--- Setting up KPM Subscriptions ---")
         if not self.e2sm_kpm: self._log(WARN, "e2sm_kpm module unavailable."); return
         nodes = list(self.gnb_ids_map.values())
@@ -401,7 +411,7 @@ class PowerManager(xAppBase):
         elif nodes: self._log(WARN, "No KPM subscriptions initiated.")
     
     @xAppBase.start_function
-    def run_power_management_xapp(self): # Main loop uses self._log
+    def run_power_management_xapp(self):
         if os.geteuid() != 0 and not self.dry_run: print("E: Must be root for live run."); sys.exit(1)
         try:
             self.energy_at_last_log_uj = self._read_current_energy_uj()
@@ -458,7 +468,7 @@ if __name__ == "__main__":
     parser.add_argument("--http_server_port",type=int,default=8091,help="HTTP server port.")
     parser.add_argument("--rmr_port",type=int,default=4561,help="RMR port.")
     args = parser.parse_args()
-    manager = None # Define manager here to be accessible in finally
+    manager = None
     try:
         manager = PowerManager(args.config_path, args.http_server_port, args.rmr_port)
         if hasattr(manager, 'signal_handler') and callable(manager.signal_handler):
@@ -472,4 +482,4 @@ if __name__ == "__main__":
     except Exception as e: print(f"E: An unexpected error at top level: {e}"); import traceback; traceback.print_exc(); sys.exit(1)
     finally:
         if manager and hasattr(manager, '_log'): manager._log(INFO,"Application finished.")
-        else: print("INFO: Application finished.") # Fallback if manager or _log is not available
+        else: print("INFO: Application finished.")
