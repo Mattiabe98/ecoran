@@ -54,8 +54,6 @@ class CoreMSRData:
         self.busy_percent: float = 0.0
 
 class PowerManager(xAppBase):
-    # Based on ASN.1: MeasurementRecordItem -> integer INTEGER (0.. 4294967295)
-    # and metric unit being "kbit".
     MAX_VOLUME_COUNTER_KBITS = (2**32) - 1 
 
     def __init__(self, config_path: str, http_server_port: int, rmr_port: int, kpm_ran_func_id: int = 2):
@@ -350,7 +348,7 @@ class PowerManager(xAppBase):
             if not isinstance(measurements, dict): self._log(WARN, f"KPM CB: Invalid 'measData' from {e2_agent_id}."); return
 
             for metric_name, value_list in measurements.items():
-                self._log(DEBUG_KPM, f"KPM CB: Metric from {e2_agent_id}: '{metric_name}', Value_List: '{value_list}'")
+                # self._log(DEBUG_KPM, f"KPM CB: Metric from {e2_agent_id}: '{metric_name}', Value_List: '{value_list}'") 
                 if isinstance(value_list, list) and value_list:
                     value_to_convert = value_list[0] 
                     try:
@@ -365,26 +363,26 @@ class PowerManager(xAppBase):
                 acc_data = self.accumulated_kpm_metrics.get(e2_agent_id)
                 
                 if acc_data is None: 
-                    # This case should ideally be covered by _setup_kpm_subscriptions initialization
-                    # but as a fallback:
-                    self._log(WARN, f"KPM CB (Volume): acc_data was None for {e2_agent_id}. Re-initializing.")
+                    self._log(WARN, f"KPM CB (Volume): acc_data was None for {e2_agent_id}. Fallback Init.")
                     self.accumulated_kpm_metrics[e2_agent_id] = {
                         'dl_bits_interval_sum':0.0,'ul_bits_interval_sum':0.0,
-                        'prev_dl_volume_kbits':current_dl_volume_kbits, 
-                        'prev_ul_volume_kbits':current_ul_volume_kbits,
-                        'num_reports_processed':0 # Will be incremented to 1
+                        'prev_dl_volume_kbits':current_dl_volume_kbits, # Use current as first prev
+                        'prev_ul_volume_kbits':current_ul_volume_kbits, # Use current as first prev
+                        'num_reports_processed':0 # Will become 1 after this report
                     }
-                    acc_data = self.accumulated_kpm_metrics[e2_agent_id] # Use the newly created dict
+                    acc_data = self.accumulated_kpm_metrics[e2_agent_id]
                 
-                if acc_data['num_reports_processed'] == 0 or \
-                   acc_data.get('prev_dl_volume_kbits') is None or \
-                   acc_data.get('prev_ul_volume_kbits') is None:
-                    # This is the first valid report we can use as a baseline
-                    self._log(DEBUG_KPM, f"KPM CB (Volume): First data report for {e2_agent_id} or prev_volume was None. Setting baseline. DL_kbits={current_dl_volume_kbits}, UL_kbits={current_ul_volume_kbits}")
-                    # Deltas remain 0 for this first data point
+                # If prev values are None (first time after _setup_kpm_subscriptions) or num_reports_processed is 0
+                is_first_meaningful_report = (acc_data.get('prev_dl_volume_kbits') is None or
+                                              acc_data.get('prev_ul_volume_kbits') is None or
+                                              acc_data['num_reports_processed'] == 0)
+
+                if is_first_meaningful_report:
+                    self._log(DEBUG_KPM, f"KPM CB (Volume): First valid data report for {e2_agent_id}. Setting baseline. DL_kbits={current_dl_volume_kbits}, UL_kbits={current_ul_volume_kbits}")
+                    # Deltas remain 0.0 for this first data point used as baseline
                 else: 
-                    prev_dl_kbits = acc_data['prev_dl_volume_kbits'] # Should be a float now
-                    prev_ul_kbits = acc_data['prev_ul_volume_kbits'] # Should be a float now
+                    prev_dl_kbits = acc_data['prev_dl_volume_kbits'] # Should be float from previous report
+                    prev_ul_kbits = acc_data['prev_ul_volume_kbits'] # Should be float from previous report
                     
                     delta_dl_kbits = current_dl_volume_kbits - prev_dl_kbits
                     delta_ul_kbits = current_ul_volume_kbits - prev_ul_kbits
@@ -418,7 +416,8 @@ class PowerManager(xAppBase):
                     for gnb_id, data in self.accumulated_kpm_metrics.items()}
             for data in self.accumulated_kpm_metrics.values():
                 data['dl_bits_interval_sum'] = 0.0; data['ul_bits_interval_sum'] = 0.0
-                # num_reports_processed continues, it's per KPM report, not per print interval
+                # num_reports_processed is per KPM report cycle for that gNB, not reset here for the print interval.
+                # prev_dl/ul_volume_kbits are also kept per-gnb for continuous delta calculation.
         return snap
 
     def _setup_kpm_subscriptions(self):
@@ -440,15 +439,20 @@ class PowerManager(xAppBase):
             try:
                 self._log(INFO, f"Subscribing KPM: Node {node_id}, Metrics {metrics}, Report {rep_ms}ms, Granularity {gran_ms}ms, Style {style}")
                 self.e2sm_kpm.subscribe_report_service_style_1(node_id, rep_ms, metrics, gran_ms, cb_adapter)
-                with self.kpm_data_lock:
-                    if node_id not in self.accumulated_kpm_metrics: self.accumulated_kpm_metrics[node_id] = {'dl_bits_interval_sum':0.0, 'ul_bits_interval_sum':0.0, 'prev_dl_volume_kbits':None, 'prev_ul_volume_kbits':None, 'num_reports_processed':0}
+                with self.kpm_data_lock: # Ensure entry exists with None for prev values
+                    if node_id not in self.accumulated_kpm_metrics: 
+                        self.accumulated_kpm_metrics[node_id] = {
+                            'dl_bits_interval_sum':0.0, 'ul_bits_interval_sum':0.0, 
+                            'prev_dl_volume_kbits':None, 'prev_ul_volume_kbits':None, 
+                            'num_reports_processed':0
+                        }
                 successes+=1
             except Exception as e: self._log(ERROR, f"KPM subscription failed for {node_id}: {e}"); import traceback; traceback.print_exc()
         if successes > 0: self._log(INFO, f"--- KPM Subscriptions: {successes} nodes attempted. ---")
         elif nodes: self._log(WARN, "No KPM subscriptions initiated.")
     
     @xAppBase.start_function
-    def run_power_management_xapp(self):
+    def run_power_management_xapp(self): # Same as previous correct version
         if os.geteuid() != 0 and not self.dry_run: print("E: Must be root for live run."); sys.exit(1)
         try:
             self.energy_at_last_log_uj = self._read_current_energy_uj()
