@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: xapp-rtg
+data:
+  routes.rtg: |
+    newrt|start
+    rte|1080|e2mgr-service:3801    # RIC_SCTP_CONNECTION_FAILURE
+    rte|1090|e2term-service:38000   # RIC_SCTP_CLEAR_ALL
+    rte|1100|e2mgr-service:3801    # E2_TERM_INIT
+    rte|1101|e2term-service:38000   # E2_TERM_KEEP_ALIVE_REQ
+    rte|1102|e2mgr-service:3801    # E2_TERM_KEEP_ALIVE_RESP
+    rte|12001|e2mgr-service:3801   # RIC_E2_SETUP_REQ
+    rte|12002|e2term-service:38000  # RIC_E2_SETUP_RESP
+    rte|12003|e2term-service:38000  # RIC_E2_SETUP_FAILURE
+    rte|12010|e2term-service:38000  # RIC_SUB_REQ
+    rte|12011|submgr-service:4560   # RIC_SUB_RESP
+    rte|12012|submgr-service:4560   # RIC_SUB_FAILURE
+    rte|12020|e2term-service:38000  # RIC_SUB_DEL_REQ
+    rte|12021|submgr-service:4560   # RIC_SUB_DEL_RESP
+    rte|12022|submgr-service:4560   # RIC_SUB_DEL_FAILURE
+    rte|12050|xapp-service:4560;xapp-service:4561;xapp-service:4562   # RIC_INDICATION
+    rte|12040|e2term-service:38000  # RIC_CONTROL_REQ
+    rte|12041|xapp-service:4560   # RIC_CONTROL_ACK
+    rte|12042|xapp-service:4560   # RIC_CONTROL_FAILURE
+    newrt|end
