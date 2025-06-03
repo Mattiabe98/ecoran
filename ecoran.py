@@ -435,12 +435,12 @@ class PowerManager(xAppBase):
                 
                 if cores_for_this_clos:
                     core_list_str = ",".join(map(str, sorted(list(cores_for_this_clos))))
-                    self._run_command(["intel-speed-select", "-C", core_list_str, "core-power", "assoc", "-c", str(clos_id)])
+                    self._run_command(["intel-speed-select", "-c", core_list_str, "core-power", "assoc", "-c", str(clos_id)])
                     self._log(INFO, f"SST-CP: Associated cores [{core_list_str}] to CLOS {clos_id}.")
                     all_configured_cores.update(cores_for_this_clos)
                 elif clos_id == 0 and self.ru_timing_core_indices and not component_names: # RU cores only in CLOS0
                      core_list_str = ",".join(map(str, sorted(list(self.ru_timing_core_indices))))
-                     self._run_command(["intel-speed-select", "-C", core_list_str, "core-power", "assoc", "-c", str(clos_id)])
+                     self._run_command(["intel-speed-select", "-c", core_list_str, "core-power", "assoc", "-c", str(clos_id)])
                      self._log(INFO, f"SST-CP: Associated RU_Timing cores [{core_list_str}] to CLOS {clos_id}.")
                      all_configured_cores.update(self.ru_timing_core_indices)
                 else:
