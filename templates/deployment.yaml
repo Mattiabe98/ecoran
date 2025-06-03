@@ -18,8 +18,14 @@ spec:
         - name: ecoran
           image: "docker.io/boing7898/ecoran:latest"
           imagePullPolicy: Always
-          command: ["sleep"]
-          args: ["infinity"]
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              mkdir -p /tmp/ecoran && \
+              cp -r /opt/ecoran/* /tmp/ecoran/ && \
+              cp -r /opt/ecoran/lib /tmp/ecoran/ && \
+              cd /tmp/ecoran && \
+              python3 ecoran.py config.yaml
           volumeMounts:
             - name: xapp-rtg
               mountPath: /opt/ric/config/uta-rtg.rt
