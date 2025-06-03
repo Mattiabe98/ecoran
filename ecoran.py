@@ -389,7 +389,7 @@ class PowerManager(xAppBase):
                 print(f"DEBUG KPM CB: Metric from {e2_agent_id}: '{metric_name}', Value: '{value}' (type: {type(value)})")
                 try:
                     if metric_name == 'DRB.UEThpDl': dl_thp_bps = float(value)
-                    elif metric_name == 'DRB.UEThpUL': ul_thp_bps = float(value)
+                    elif metric_name == 'DRB.UEThpUl': ul_thp_bps = float(value)
                 except (ValueError, TypeError): print(f"W: KPM metric '{metric_name}' value '{value}' from {e2_agent_id} invalid. Using 0.0.")
 
             dl_bits, ul_bits = dl_thp_bps * granul_period_s, ul_thp_bps * granul_period_s
@@ -417,7 +417,7 @@ class PowerManager(xAppBase):
         e2_node_ids_to_subscribe = list(self.gnb_ids_map.values())
         if not e2_node_ids_to_subscribe: print("W: No gNB IDs found in config ('gnb_ids') for KPM."); return
 
-        kpm_metrics_to_subscribe = ['DRB.UEThpDl', 'DRB.UEThpUL'] 
+        kpm_metrics_to_subscribe = ['DRB.UEThpDl', 'DRB.UEThpUl'] 
         report_period_ms = int(self.config.get('kpm_report_period_ms', 1000))
         granul_period_ms = int(self.config.get('kpm_granularity_period_ms', 1000)) # Defaulting to 1000ms
         current_kpm_report_style = 1 # For Style 1 subscriptions
