@@ -3,8 +3,7 @@ FROM python:3.8-slim as builder
 RUN apt-get update && apt-get install -y \
     git wget curl less nano \
     nmap mtr net-tools tcpdump apt-utils sudo jq tree iproute2 iputils-ping traceroute \
-    libffi-dev libnl-3-dev libnl-genl-3-dev \
-    python3-psutil python3-yaml
+    libffi-dev libnl-3-dev libnl-genl-3-dev
 
 # Install RMR
 ARG RMR_VERSION=4.9.4
@@ -33,8 +32,7 @@ ARG E2AP_VERSION=1.1.0
 RUN apt-get update && apt-get install -y \
     git wget curl less nano \
     nmap mtr net-tools tcpdump apt-utils sudo jq tree iproute2 iputils-ping traceroute \
-    libffi-dev libnl-3-dev libnl-genl-3-dev \
-    python3-psutil python3-yaml && \
+    libffi-dev libnl-3-dev libnl-genl-3-dev && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Copy built shared libs and rmr_probe
@@ -50,7 +48,7 @@ ENV LD_LIBRARY_PATH=/lib:/usr/lib:/usr/local/lib
 
 # Install Python dependencies
 RUN pip install --upgrade pip && \
-    pip install certifi six python_dateutil setuptools urllib3 logger requests \
+    pip install psutil PyYAML certifi six python_dateutil setuptools urllib3 logger requests \
     inotify_simple mdclogpy google-api-python-client msgpack ricsdl asn1tools
 
 # Create dirs
