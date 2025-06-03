@@ -2,12 +2,19 @@
 # Power Manager Application Configuration File
 # ==============================================================================
 
-# Logging verbosity for console output: 0 (silent), 1 (errors), 2 (warnings), 3 (info), 4 (debug_kpm), 5 (debug_all) 
-console_verbosity_level: 3 
-# Logging verbosity for file output: 
-file_verbosity_level: 4 
-# Example: log more to file 
-log_file_path: "/mnt/data/ecoran/"
+# Logging verbosity for console output: 0 (silent), 1 (errors), 2 (warnings), 3 (info), 4 (debug_kpm), 5 (debug_all)
+console_verbosity_level: 3
+# Logging verbosity for file output:
+file_verbosity_level: 4
+# Example: log more to file
+log_file_path: "/mnt/data/ecoran/" # Ensure this path is writable
+
+# ------------------------------------------------------------------------------
+# xAppBase Configuration (if PowerManager inherits from it)
+# ------------------------------------------------------------------------------
+# Path to the configuration file for the underlying xAppBase library, if used.
+# Leave empty or comment out if not applicable or if xAppBase is configured differently.
+# xapp_base_config_file: "config/xapp_base_defaults.json"
 
 # ------------------------------------------------------------------------------
 # Core Affinity & RAN Component Definitions
@@ -22,124 +29,135 @@ ran_cores:
   cu0: "4"         # Example: Control Unit 0
   du0: "0,6,7,8"        # Example: Distributed Unit 0
   du1: "1,10,11,12"       # Example: Distributed Unit 1
-  du3: "2,14,15,16"
-  du4: "3,18,19,20"
+  du3: "2,14,15,16" # Corrected from du2 to du3 based on gnb_ids
+  du4: "3,18,19,20" # Corrected from du5 to du4 based on gnb_ids
 
+# Mapping of DU component names (from ran_cores) to their gNB IDs (E2 Node IDs for KPM)
 gnb_ids:
   du0: "gnbd_999_091_00019b_0"
   du1: "gnbd_999_092_00019b_1"
-  du3: "gnbd_999_094_00019b_3"
-  du4: "gnbd_999_095_00019b_4"
-# ------------------------------------------------------------------------------
-# Monitoring & Logging
-# ------------------------------------------------------------------------------
-# Interval (in seconds) for printing monitoring logs to the console.
-print_interval: 10
+  du3: "gnbd_999_094_00019b_3" # Assumed du3 is the component name
+  du4: "gnbd_999_095_00019b_4" # Assumed du4 is the component name
 
-# RU_Timing Cores: These are critical cores whose CPU utilization will be
-# actively monitored. The TDP adjustment algorithm will try to keep the
-# *average* utilization of these cores around a target percentage.
-# Their individual utilizations will also be logged.
-# These cores will *always* be included in CLOS 0 if CLOS 0 is configured
-# via 'clos_association'.
+# ------------------------------------------------------------------------------
+# KPM (Key Performance Metrics) Subscription Settings
+# ------------------------------------------------------------------------------
+# KPM Report Period (ms): How often each gNB should send a KPM report.
+# If you lower this to 1s, set kpm_report_period_ms: 1000
+kpm_report_period_ms: 5000 # Default 5 seconds
+# KPM Granularity Period (ms): The measurement granularity at the gNB.
+# Often same as report_period_ms.
+kpm_granularity_period_ms: 5000 # Default 5 seconds
+
+# ------------------------------------------------------------------------------
+# Monitoring, Control Loop Timings & Logging
+# ------------------------------------------------------------------------------
+# Main Loop Sleep Interval (seconds): Granularity of the main control loop.
+# Should be smaller than other intervals. e.g., 0.1 for responsive checks.
+main_loop_sleep_s: 0.1
+
+# Statistics Print Interval (seconds): How often summary statistics are logged.
+stats_print_interval_s: 10 # Matches default optimizer_decision_interval_s
+
+# RU_Timing Cores: Critical cores for RU timing PID.
 # Format: "core_list_string" (e.g., "1,3,6,9")
-ru_timing_cores: "5,9,13,17" # Ensure these cores are also part of a component in 'ran_cores' if needed for CLOS.
+ru_timing_cores: "5,9,13,17"
 
 # ------------------------------------------------------------------------------
 # TDP (Thermal Design Power) Management
 # ------------------------------------------------------------------------------
 # Absolute allowed range for the CPU package TDP limit in Watts.
-# The application will never set the TDP outside this range.
 tdp_range:
   min: 90  # Minimum TDP in Watts
   max: 170 # Maximum TDP in Watts
 
-# Target CPU utilization percentage for the *average* of all 'ru_timing_cores'.
-# The TDP adjustment algorithm aims to keep the average RU core busy % around this value.
-# Typically, for real-time cores, this is set high (e.g., 90-98%).
+# === RU Timing PID Controller Parameters ===
+# Target CPU utilization percentage for the *average of max* of 'ru_timing_cores'.
 target_ru_timing_cpu_usage: 99.5
 
-# Interval (in seconds) at which the TDP adjustment logic runs.
-# The main monitoring loop collects CPU data every ~1 second for averaging,
-# but TDP changes will only be attempted at this interval.
-# Must be a positive integer.
-tdp_update_interval_s: 1 # e.g., adjust TDP every 2 seconds
+# Interval (in seconds) at which the RU Timing PID logic runs.
+ru_timing_pid_interval_s: 1.0 # e.g., adjust TDP for RU timing every 1 second
 
-# --- TDP Adjustment Algorithm Parameters ---
-# These parameters fine-tune how the TDP is adjusted.
-
-# Sensitivity Factor: How much the average RU core CPU usage must deviate from
-# 'target_ru_timing_cpu_usage' (as a fraction of the target) before any TDP
-# adjustment is considered. This creates a "deadband".
-# Value must be between 0.0 and 1.0 (exclusive of 0).
-# Example: target=95%, sensitivity=0.03. Deadband is 95% +/- (95*0.03) = 95% +/- 2.85%.
-# Adjustments occur if average RU usage is outside ~92.15% - 97.85%.
+# Sensitivity Factor for RU Timing PID.
 tdp_adjustment_sensitivity: 0.0005
 
-# Small Step (Watts): TDP adjustment step size when average RU CPU usage is
-# close to the target (but outside the sensitivity deadband).
-# For fine-grained control. Must be positive.
-tdp_adjustment_step_w_small: 1
+# Small Step (Watts) for RU Timing PID.
+tdp_adjustment_step_w_small: 1.0
 
-# Large Step (Watts): TDP adjustment step size when average RU CPU usage is
-# far from the target. For quicker reaction to large deviations.
-# Must be positive. Typically >= tdp_adjustment_step_w_small.
-tdp_adjustment_step_w_large: 3
+# Large Step (Watts) for RU Timing PID.
+tdp_adjustment_step_w_large: 3.0
 
-# Adaptive Step - Far Threshold Factor: A multiplier for the sensitivity threshold
-# to determine "far" from target.
-# "Far" if: abs(avg_RU_usage - target) > (target * sensitivity_factor * far_threshold_factor)
-# If deviation is "far", 'tdp_adjustment_step_w_large' is used, otherwise 'small' step is used.
-# Must be > 1.0.
-# Example: sensitivity_threshold_abs = 2.85%. factor = 2.0.
-# "Far" threshold = 2.85% * 2.0 = 5.7%. Large step if deviation > 5.7%.
+# Adaptive Step - Far Threshold Factor for RU Timing PID.
 adaptive_step_far_threshold_factor: 1.5
 
-# CPU Usage Averaging: Number of recent *average* RU core CPU usage samples
-# to average together before making a TDP adjustment decision. This helps smooth
-# out temporary spikes and prevent overly reactive TDP changes.
-# Must be a positive integer.
+# CPU Usage Averaging: Number of recent *average max* RU core CPU usage samples for RU Timing PID.
 max_cpu_usage_samples: 3
+
+# === Efficiency Optimizer (Thompson Sampling Bandit) Parameters ===
+# Interval (seconds) at which the Bandit Optimizer makes a decision.
+# This should be long enough for KPM metrics to reflect TDP changes and stabilize.
+# If kpm_report_period_ms is 1000 (1s), consider 5-10s here.
+optimizer_decision_interval_s: 10.0
+
+# Bandit Optimizer Configuration
+bandit_optimizer:
+  # Actions: TDP delta in Watts. Keys are arm names, values are TDP changes.
+  # Include 'hold' if you want an option to explicitly not change TDP.
+  actions_tdp_delta_w:
+    "decrease_large": -10.0
+    "decrease_medium": -5.0
+    "decrease_small": -2.0
+    "hold": 0.0
+    "increase_small": 2.0
+    "increase_medium": 5.0
+    "increase_large": 10.0
+  
+  # Prior mean for efficiency (bits/uJ). A rough initial guess.
+  prior_mean_efficiency: 5.0
+  
+  # Prior precision for efficiency. Lower value = more initial exploration.
+  # (Precision = 1 / Variance). Small precision means large variance.
+  prior_precision: 0.01
+  
+  # Reward precision: Assumed precision of the efficiency measurement itself.
+  # Higher if measurements are stable, lower if noisy.
+  reward_precision: 1.0
 
 # ------------------------------------------------------------------------------
 # Intel Speed Select Technology - Core Power (SST-CP) Configuration
 # ------------------------------------------------------------------------------
 # Defines associations between CPU cores (via RAN components) and SST-CP
 # Classes of Service (CLOS). Also sets minimum frequencies for each CLOS.
-# Requires 'intel-speed-select' tool to be installed and working.
 
-# CLOS Association: Maps a CLOS ID (typically 0-3) to a list of RAN component
-# names (defined in 'ran_cores'). Cores from these components will be associated
-# with that CLOS ID.
-# Note: 'ru_timing_cores' are automatically added to CLOS 0 if CLOS 0 is defined here.
+# CLOS Association: Maps a CLOS ID (0-3) to a list of RAN component names.
+# 'ru_timing_cores' are automatically added to CLOS 0 if defined.
 clos_association:
-  0: [cu0, du0] # CLOS 0: Cores from cu0, du0, du_realtime, PLUS all ru_timing_cores.
-  1: [du1, du2]
-  2: [du3]
-  3: [du4, du5]
+  0: [cu0, du0] # CLOS 0: Cores from cu0, du0, PLUS all ru_timing_cores.
+  1: [du1]      # Assign du1 to CLOS 1
+  2: [du3]      # Assign du3 to CLOS 2
+  3: [du4]      # Assign du4 to CLOS 3
+  # Ensure all DUs listed in ran_cores and gnb_ids are assigned here if desired.
+  # If a DU is not in a CLOS, it might run with default SST settings or be unmanaged.
 
-# CLOS Minimum Frequency: Sets the guaranteed minimum CPU frequency (in MHz)
-# for cores associated with each CLOS ID.
-# Ensure these frequencies are supported by your CPU for SST-CP core-power.
+# CLOS Minimum Frequency: Guaranteed minimum CPU frequency (in MHz) for each CLOS.
 clos_min_frequency:
-  0: 1800 # Min frequency for cores in CLOS 0
-  1: 1600 # Min frequency for cores in CLOS 1
-  2: 1200 # Min frequency for cores in CLOS 2
-  3: 1000 # Min frequency for cores in CLOS 3
+  0: 2000 # Min frequency for cores in CLOS 0 (e.g., high priority CU, DU0, RU_timing)
+  1: 1800 # Min frequency for cores in CLOS 1
+  2: 1600 # Min frequency for cores in CLOS 2
+  3: 1400 # Min frequency for cores in CLOS 3
 
 # ------------------------------------------------------------------------------
 # System & Operational Settings
 # ------------------------------------------------------------------------------
-# Dry Run Mode: If true, the application will print all commands (intel-speed-select,
-# TDP changes) it *would* execute but will NOT actually execute them.
-# CPU usage and package power will still be read for simulation.
-# Set to 'false' for live operation.
-dry_run: false
+# Dry Run Mode: If true, prints commands but doesn't execute them.
+dry_run: false # Set to true for testing without system changes
 
-# Path to the 'intel-speed-select' utility if it's not in the system's standard PATH.
-intel_speed_select_path: "intel-speed-select" # or e.g., "/usr/sbin/intel-speed-select"
+# Path to 'intel-speed-select' utility.
+intel_speed_select_path: "intel-speed-select"
 
-# Base path for the Intel RAPL (Running Average Power Limit) power capping interface.
-# This path might vary slightly (e.g., intel-rapl:0, intel-rapl:1).
-# Check /sys/class/powercap/ on your system.
+# Base path for Intel RAPL.
 rapl_path_base: "/sys/class/powercap/intel-rapl:0"
+
+# Override for RAPL max energy value (if energy_uj wraps around).
+# Default in code is 2^60-1. Only change if you know your RAPL counter's exact max.
+# rapl_max_energy_uj_override: 262143999998 # Example for a specific platform if needed
