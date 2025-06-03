@@ -26,7 +26,7 @@ class xAppBase(object):
     def __init__(self, config=None, http_server_port=8090, rmr_port=4560, rmr_flags=0x00):
         super(xAppBase, self).__init__()
         # Default Config
-        self.xAPP_IP = "ecoran-service"
+        self.xAPP_IP = "xapp-service"
         print("IP is: " + str(self.xAPP_IP))
         self.MY_HTTP_SERVER_ADDRESS = "0.0.0.0"     # bind to all interfaces
         self.MY_HTTP_SERVER_PORT = http_server_port # web server listen port
