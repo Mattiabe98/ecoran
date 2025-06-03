@@ -21,6 +21,13 @@ spec:
           # command: ["sleep"]
           # args: ["infinity"]
           volumeMounts:
+            - name: xapp-rtg
+              mountPath: /opt/ric/config/uta-rtg.rt
+              subPath: routes.rtg
+            - name: script-lib
+              mountPath: /opt/ecoran/lib/
+            - name: script-asn1
+              mountPath: /opt/ecoran/lib/asn1/
             - mountPath: /mnt/data
               name: storage
             - name: ecoran-config
@@ -30,6 +37,15 @@ spec:
           securityContext:
             privileged: true
       volumes:
+        - name: xapp-rtg
+          configMap:
+            name: xapp-rtg
+        - name: script-lib
+          configMap:
+            name: xapp-lib
+        - name: script-asn1
+          configMap:
+            name: xapp-asn1
         - name: storage
           persistentVolumeClaim:
             claimName: local-pvc
