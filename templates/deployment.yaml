@@ -31,7 +31,11 @@ spec:
             - mountPath: /mnt/data
               name: storage
             - name: ecoran-config
-              mountPath: /opt/ecoran/
+              mountPath: /opt/ecoran/ecoran.py
+              subPath: ecoran.py
+            - name: ecoran-config
+              mountPath: /opt/ecoran/config.yaml
+              subPath: config.yaml
           stdin: true
           tty: true
           securityContext:
