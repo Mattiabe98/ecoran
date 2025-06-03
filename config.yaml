@@ -2,8 +2,12 @@
 # Power Manager Application Configuration File
 # ==============================================================================
 
-# Logging verbosity: 0 (silent), 1 (errors), 2 (warnings), 3 (info), 4 (debug_kpm), 5 (debug_all)
-verbosity_level: 3 
+# Logging verbosity for console output: 0 (silent), 1 (errors), 2 (warnings), 3 (info), 4 (debug_kpm), 5 (debug_all) 
+console_verbosity_level: 3 
+# Logging verbosity for file output: 
+file_verbosity_level: 4 
+# Example: log more to file 
+log_file_path: "/mnt/data/ecoran/"
 
 # ------------------------------------------------------------------------------
 # Core Affinity & RAN Component Definitions
