@@ -510,43 +510,70 @@ class PowerManager(xAppBase):
                  self.accumulated_kpm_metrics[gnb_id] = {'dl_bits': 0.0, 'ul_bits': 0.0, 'num_reports': 0, 'total_granularity_s': 0.0}
         return metrics_snapshot
 
-    def _setup_kpm_subscriptions(self): # Unchanged
+    def _setup_kpm_subscriptions(self):
         print("--- Setting up KPM Subscriptions ---")
         if not self.e2sm_kpm:
             print("W: e2sm_kpm module not available. KPM subscriptions cannot be set up.")
             return
+
         e2_node_ids_to_subscribe = list(self.gnb_ids_map.values())
         if not e2_node_ids_to_subscribe:
             print("W: No gNB IDs found in config ('gnb_ids'). KPM monitoring will be inactive.")
             return
+
         kpm_metrics_to_subscribe = ['DRB.UEThpDl', 'DRB.UEThpUL'] 
         report_period_ms = int(self.config.get('kpm_report_period_ms', 1000))
-        granul_period_ms = int(self.config.get('kpm_granularity_period_ms', 100))
+        # --- MODIFICATION: Match example's granularity period as a test ---
+        granul_period_ms = int(self.config.get('kpm_granularity_period_ms', 1000)) # Defaulting to 1000ms
+
         successful_subscriptions = 0
+        
+        # --- MODIFICATION: Define the kpm_report_style for Style 1 ---
+        kpm_style_for_this_sub = 1 
+
         for e2_node_id_str in e2_node_ids_to_subscribe:
+            # --- MODIFICATION: Create an adapted callback using lambda ---
+            # This lambda takes the 4 arguments the library is expected to pass for an indication
+            # and then calls our _kpm_indication_callback with the additional fixed arguments for style 1.
+            adapted_callback = lambda agent, sub, hdr, msg, node_id=e2_node_id_str: \
+                self._kpm_indication_callback(agent, sub, hdr, msg,
+                                              kpm_report_style=kpm_style_for_this_sub,
+                                              ue_id=None)
+            # Added node_id to lambda capture to avoid late binding issues if e2_node_id_str changes
+            # However, the agent id from the indication should be the e2_node_id_str
+
             if self.dry_run:
-                print(f"[DRY RUN] Would subscribe to KPM for E2 Node: {e2_node_id_str}, Metrics: {kpm_metrics_to_subscribe}")
+                print(f"[DRY RUN] Would subscribe to KPM for E2 Node: {e2_node_id_str}, Metrics: {kpm_metrics_to_subscribe}, Style: {kpm_style_for_this_sub}")
                 with self.kpm_data_lock:
                     if e2_node_id_str not in self.accumulated_kpm_metrics:
                         self.accumulated_kpm_metrics[e2_node_id_str] = {'dl_bits': 0.0, 'ul_bits': 0.0, 'num_reports': 0, 'total_granularity_s': 0.0}
                 successful_subscriptions +=1
                 continue 
+            
             try:
-                print(f"Subscribing to KPM for E2 Node: {e2_node_id_str}, Metrics: {kpm_metrics_to_subscribe}, Report: {report_period_ms}ms, Granularity: {granul_period_ms}ms")
+                print(f"Subscribing to KPM for E2 Node: {e2_node_id_str}, Metrics: {kpm_metrics_to_subscribe}, Report: {report_period_ms}ms, Granularity: {granul_period_ms}ms, Style: {kpm_style_for_this_sub}")
                 self.e2sm_kpm.subscribe_report_service_style_1(
-                    e2_node_id_str, report_period_ms, kpm_metrics_to_subscribe,
-                    granul_period_ms, self._kpm_indication_callback
+                    e2_node_id_str,
+                    report_period_ms,
+                    kpm_metrics_to_subscribe,
+                    granul_period_ms,
+                    adapted_callback # Pass the adapted lambda
                 )
+                # The "Successfully subscribed..." message usually comes from the xAppBase library itself.
+                # If it doesn't print, it means the call to subscribe_report_service_style_1 might be failing earlier.
                 with self.kpm_data_lock: 
                     if e2_node_id_str not in self.accumulated_kpm_metrics:
                          self.accumulated_kpm_metrics[e2_node_id_str] = {'dl_bits': 0.0, 'ul_bits': 0.0, 'num_reports': 0, 'total_granularity_s': 0.0}
                 successful_subscriptions +=1
-            except Exception as e:
-                print(f"E: Failed to subscribe to KPM for E2 Node {e2_node_id_str}: {e}")
+            except Exception as e: # Catch errors from xAppBase subscription call
+                print(f"E: Failed to initiate KPM subscription for E2 Node {e2_node_id_str}: {e}")
+                import traceback
+                traceback.print_exc() # Print full traceback for the exception
+        
         if successful_subscriptions > 0:
-            print(f"--- KPM Subscriptions: {successful_subscriptions} E2 nodes attempted/subscribed. ---")
+            print(f"--- KPM Subscriptions: {successful_subscriptions} E2 nodes attempted to subscribe. ---")
         elif e2_node_ids_to_subscribe :
-            print("W: No KPM subscriptions were successful.")
+            print("W: No KPM subscriptions were successfully initiated.")
     
     @xAppBase.start_function
     def run_power_management_xapp(self): # Main loop largely unchanged, relies on corrected _adjust_tdp
