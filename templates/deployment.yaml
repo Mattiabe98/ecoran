@@ -24,7 +24,6 @@ spec:
               mkdir -p /tmp/ecoran && \
               cp -rL /opt/ecoran/* /tmp/ecoran/ && \
               cd /tmp/ecoran && \
-              python3 ecoran.py config.yaml && \
               sleep infinity;
           volumeMounts:
             - name: xapp-rtg
