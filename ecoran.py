@@ -47,6 +47,8 @@ class CoreMSRData:
         self.core_id, self.mperf, self.tsc, self.busy_percent = core_id, None, None, 0.0
 
 class PowerManager(xAppBase):
+    # Not strictly needed if KPM values are deltas over granulPeriod, but defined for context
+    # For "kbit" unit and 32-bit integer representation:
     MAX_VOLUME_COUNTER_KBITS = (2**32) - 1 
 
     def __init__(self, config_path: str, http_server_port: int, rmr_port: int, kpm_ran_func_id: int = 2):
@@ -79,8 +81,8 @@ class PowerManager(xAppBase):
         self.max_samples_cpu_avg = int(self.config.get('max_cpu_usage_samples', 3))
         self.dry_run = bool(self.config.get('dry_run', False))
         self.current_tdp_w = float(self.tdp_min_w) 
-        self.last_pkg_energy_uj: Optional[int] = None 
-        self.last_energy_read_time: Optional[float] = None 
+        self.last_pkg_energy_uj: Optional[int] = None
+        self.last_energy_read_time: Optional[float] = None
         self.energy_at_last_log_uj: Optional[int] = None 
         self.max_ru_timing_usage_history: List[float] = []
         self.last_tdp_adjustment_time: float = 0.0
@@ -97,14 +99,10 @@ class PowerManager(xAppBase):
             if isinstance(comps, list): self.clos_to_du_names_map[int(cid)] = [c for c in comps if c in ran_components_in_config and c.startswith('du')]
             else: self._log(WARN, f"Components for CLOS {cid} not a list. Skipping.")
         
-        self.kpm_gnb_tracking: Dict[str, Dict[str, Any]] = {} 
-        self.kpm_data_lock = threading.Lock() 
+        self.kpm_gnb_last_state: Dict[str, Dict[str, Any]] = {} # For per-DU KPM state (energy/time)
+        self.accumulated_kpm_metrics: Dict[str, Dict[str, Any]] = {} # For main print interval accumulation
+        self.kpm_data_lock = threading.Lock()
         
-        # For per-KPM-interval approximate efficiency logging
-        self.last_energy_reading_for_kpm_eff_uj: Optional[int] = None
-        self.last_kpm_report_time_for_eff_calc: Optional[float] = None
-        self.kpm_eff_lock = threading.Lock() 
-
         self._validate_config()
         if self.dry_run: self._log(INFO, "!!!!!!!!!!!! DRY RUN MODE ENABLED !!!!!!!!!!!!")
 
@@ -148,7 +146,7 @@ class PowerManager(xAppBase):
             level_map_fallback = {ERROR: "E:", WARN: "W:", INFO: "INFO:", DEBUG_KPM: "DBG_KPM:", DEBUG_ALL: "DEBUG:"}
             print(f"{time.strftime('%H:%M:%S')} {level_map_fallback.get(level_num, f'LVL{level_num}:')} {message}")
     
-    def _validate_config(self):
+    def _validate_config(self): # Keep critical print for startup
         if not os.path.exists(self.rapl_base_path) or not os.path.exists(self.power_limit_uw_file):
             print(f"E: RAPL path {self.rapl_base_path} or power limit file missing. Exiting."); sys.exit(1) 
         if not os.path.exists(self.energy_uj_file): self._log(WARN, f"Energy file {self.energy_uj_file} not found.")
@@ -161,16 +159,15 @@ class PowerManager(xAppBase):
             self._log(INFO, "MSR access test passed.")
         try: subprocess.run([self.intel_sst_path,"--version"],capture_output=True,check=True,text=True)
         except Exception as e: print(f"E: '{self.intel_sst_path}' failed: {e}. Exiting."); sys.exit(1)
-        # ... (Other critical parameter checks with print + sys.exit if they should halt execution) ...
         self._log(INFO, "Configuration and system checks passed.")
 
-    def _load_config(self) -> Dict[str, Any]:
+    def _load_config(self) -> Dict[str, Any]: # Keep critical print
         try:
             with open(self.config_path, 'r') as f: return yaml.safe_load(f)
         except FileNotFoundError: print(f"E: Config file '{self.config_path}' not found. Exiting."); sys.exit(1)
         except yaml.YAMLError as e: print(f"E: Could not parse config file '{self.config_path}': {e}. Exiting."); sys.exit(1)
 
-    def _parse_core_list_string(self, core_str: str) -> List[int]:
+    def _parse_core_list_string(self, core_str: str) -> List[int]: # Use self._log
         cores: Set[int] = set();
         if not core_str: return []
         for part_raw in core_str.split(','):
@@ -184,7 +181,7 @@ class PowerManager(xAppBase):
                 except ValueError: self._log(WARN, f"Invalid core number '{part}'.")
         return sorted(list(cores))
 
-    def _update_ru_core_msr_data(self):
+    def _update_ru_core_msr_data(self): # Internal
         if not self.ru_timing_core_indices: return
         for cid in self.ru_timing_core_indices:
             mperf, tsc = read_msr_direct(cid, MSR_IA32_MPERF), read_msr_direct(cid, MSR_IA32_TSC)
@@ -199,7 +196,7 @@ class PowerManager(xAppBase):
             else: busy = prev.busy_percent
             prev.mperf, prev.tsc, prev.busy_percent = mperf, tsc, busy
 
-    def _get_control_ru_timing_cpu_usage(self) -> float:
+    def _get_control_ru_timing_cpu_usage(self) -> float: # Internal
         if not self.ru_timing_core_indices: return 0.0
         max_b = 0.0; valid = False
         for cid in self.ru_timing_core_indices:
@@ -210,7 +207,7 @@ class PowerManager(xAppBase):
         if len(self.max_ru_timing_usage_history) > self.max_samples_cpu_avg: self.max_ru_timing_usage_history.pop(0)
         return sum(self.max_ru_timing_usage_history)/len(self.max_ru_timing_usage_history) if self.max_ru_timing_usage_history else 0.0
 
-    def _run_command(self, cmd_list: List[str]) -> None:
+    def _run_command(self, cmd_list: List[str]) -> None: # Uses self._log
         cmd = [self.intel_sst_path] + cmd_list[1:] if cmd_list[0]=="intel-speed-select" else cmd_list
         pcmd = ' '.join(cmd)
         if self.dry_run: self._log(INFO, f"[DRY RUN] Would exec: {pcmd}"); return
@@ -220,12 +217,9 @@ class PowerManager(xAppBase):
             msg = f"Cmd '{e.cmd}' fail ({e.returncode}).SOUT:{e.stdout.strip()} SERR:{e.stderr.strip()}"
             self._log(ERROR, msg);
             if not self.dry_run: raise RuntimeError(msg)
-        except FileNotFoundError:
-            self._log(ERROR, f"Cmd '{cmd[0]}' not found.")
-            if not self.dry_run:
-                raise RuntimeError(f"Cmd not found: {cmd[0]}")
+        except FileNotFoundError: self._log(ERROR, f"Cmd '{cmd[0]}' not found."); if not self.dry_run: raise RuntimeError(f"Cmd not found: {cmd[0]}")
 
-    def _setup_intel_sst(self):
+    def _setup_intel_sst(self): # Uses self._log
         self._log(INFO, "--- Configuring Intel SST-CP ---")
         try:
             self._run_command(["intel-speed-select", "core-power", "enable"])
@@ -243,13 +237,13 @@ class PowerManager(xAppBase):
         except Exception as e: self._log(ERROR, f"SST-CP setup error: {e}");
             if not self.dry_run: raise RuntimeError(str(e))
 
-    def _read_current_tdp_limit_w(self) -> float:
+    def _read_current_tdp_limit_w(self) -> float: # Uses self._log
         if self.dry_run and self.last_tdp_adjustment_time > 0: return self.current_tdp_w 
         try:
             with open(self.power_limit_uw_file, 'r') as f: return int(f.read().strip()) / 1e6
         except Exception: self._log(WARN, f"Could not read {self.power_limit_uw_file}. Assuming min_tdp."); return float(self.tdp_min_w)
 
-    def _set_tdp_limit_w(self, tdp_watts: float, context: str = ""):
+    def _set_tdp_limit_w(self, tdp_watts: float, context: str = ""): # Uses self._log
         clamped_uw = max(int(self.tdp_min_w*1e6), min(int(tdp_watts*1e6), int(self.tdp_max_w*1e6)))
         new_tdp_w = clamped_uw / 1e6
         if self.dry_run:
@@ -271,7 +265,7 @@ class PowerManager(xAppBase):
         except Exception as e: self._log(ERROR, f"Exception writing TDP: {e}");
             if not self.dry_run: raise RuntimeError(str(e))
 
-    def _adjust_tdp(self, control_ru_cpu_usage: float):
+    def _adjust_tdp(self, control_ru_cpu_usage: float): # Uses self._log via _set_tdp_limit_w
         error = self.target_ru_cpu_usage - control_ru_cpu_usage; abs_error = abs(error) 
         sens_thresh = self.target_ru_cpu_usage * self.tdp_adj_sensitivity_factor
         far_thresh = sens_thresh * self.adaptive_step_far_thresh_factor
@@ -282,7 +276,7 @@ class PowerManager(xAppBase):
                 ctx = f"TDP Adjust: RU CPU {control_ru_cpu_usage:.2f}%, Target {self.target_ru_cpu_usage:.2f}%. Error {error:.2f}%. Action: TDP by {change:.1f}W"
                 self._set_tdp_limit_w(self.current_tdp_w + change, context=ctx)
 
-    def _get_pkg_power_w(self) -> Tuple[float, bool]:
+    def _get_pkg_power_w(self) -> Tuple[float, bool]: # Use self._log
         if not os.path.exists(self.energy_uj_file): return 0.0, False
         try:
             with open(self.energy_uj_file, 'r') as f: current_e_uj = int(f.read().strip())
@@ -306,13 +300,13 @@ class PowerManager(xAppBase):
             return pwr_w, ok
         except Exception as e: self._log(WARN, f"Exception in _get_pkg_power_w: {e}"); return 0.0, False
         
-    def _read_current_energy_uj(self) -> Optional[int]:
+    def _read_current_energy_uj(self) -> Optional[int]: # Use self._log
         if not os.path.exists(self.energy_uj_file): return None
         try:
             with open(self.energy_uj_file, 'r') as f: return int(f.read().strip())
         except Exception as e: self._log(WARN, f"Could not read {self.energy_uj_file}: {e}"); return None
 
-    def _get_interval_energy_uj(self) -> Optional[float]:
+    def _get_interval_energy_uj(self) -> Optional[float]: # Use self._log
         curr_e_uj = self._read_current_energy_uj()
         if curr_e_uj is None: return None
         if self.energy_at_last_log_uj is None: self.energy_at_last_log_uj = curr_e_uj; return None 
@@ -331,82 +325,84 @@ class PowerManager(xAppBase):
     def _kpm_indication_callback(self, e2_agent_id: str, subscription_id: str,
                                  indication_hdr_bytes: bytes, indication_msg_bytes: bytes,
                                  kpm_report_style: Optional[int] = None, ue_id: Optional[Any] = None):
-        current_report_time = time.monotonic()
-        current_pkg_energy_uj = self._read_current_energy_uj()
+        current_kpm_report_time = time.monotonic()
+        current_package_energy_uj_snapshot = self._read_current_energy_uj()
 
-        self._log(DEBUG_KPM, f"KPM CB: Start for {e2_agent_id}, SubID {subscription_id}, Time: {current_report_time:.3f}")
-        if not self.e2sm_kpm: self._log(WARN, f"KPM indication from {e2_agent_id}, but e2sm_kpm module unavailable."); return
+        self._log(DEBUG_KPM, f"KPM CB: Agent:{e2_agent_id}, Sub:{subscription_id}, Time:{current_kpm_report_time:.3f}")
+        if not self.e2sm_kpm: self._log(WARN, f"KPM from {e2_agent_id}, but e2sm_kpm unavailable."); return
         
         try:
             meas_report = self.e2sm_kpm.extract_meas_data(indication_msg_bytes)
-            # self._log(DEBUG_KPM, f"KPM CB: Extracted meas_report from {e2_agent_id}: {meas_report}") 
-            if not meas_report: self._log(WARN, f"KPM CB: Failed to extract KPM measurement data from {e2_agent_id}."); return
+            if not meas_report: self._log(WARN, f"KPM CB: Failed to extract KPM data from {e2_agent_id}."); return
             
-            dl_volume_kbits_in_period, ul_volume_kbits_in_period = 0.0, 0.0
+            dl_kbits_this_period, ul_kbits_this_period = 0.0, 0.0
             measurements = meas_report.get("measData", {})
-            # self._log(DEBUG_KPM, f"KPM CB: measData from {e2_agent_id}: {measurements}") 
             if not isinstance(measurements, dict): self._log(WARN, f"KPM CB: Invalid 'measData' from {e2_agent_id}."); return
 
             for metric_name, value_list in measurements.items():
                 if isinstance(value_list, list) and value_list:
-                    value_to_convert = value_list[0] 
+                    value = value_list[0] 
                     try:
-                        if metric_name == 'DRB.RlcSduTransmittedVolumeDL': 
-                            dl_volume_kbits_in_period = float(value_to_convert)
-                        elif metric_name == 'DRB.RlcSduTransmittedVolumeUL': 
-                            ul_volume_kbits_in_period = float(value_to_convert)
-                    except (ValueError, TypeError): self._log(WARN, f"KPM CB: Metric '{metric_name}' value '{value_to_convert}' invalid for float().")
-                else: self._log(WARN, f"KPM CB: Metric '{metric_name}' from {e2_agent_id} unexpected value format: {value_list}.")
-
-            bits_this_kpm_interval = (dl_volume_kbits_in_period + ul_volume_kbits_in_period) * 1000.0
-
-            # --- Per-DU Approximate Efficiency Calculation & Logging ---
-            if current_pkg_energy_uj is not None:
-                with self.kpm_eff_lock: 
-                    if self.last_energy_reading_for_kpm_eff_uj is not None and \
-                       self.last_kpm_report_time_for_eff_calc is not None:
-                        
-                        delta_time_s = current_report_time - self.last_kpm_report_time_for_eff_calc
-                        delta_energy_uj_pkg = float(current_pkg_energy_uj - self.last_energy_reading_for_kpm_eff_uj)
-
-                        if delta_energy_uj_pkg < 0: 
-                            max_r = self.max_energy_val_rapl 
-                            try: 
-                                with open(os.path.join(self.rapl_base_path, "max_energy_range_uj"),'r') as f_max_r: 
-                                    max_r_val = int(f_max_r.read().strip());
-                                    if max_r_val > 0: max_r = max_r_val
-                            except Exception: pass
-                            delta_energy_uj_pkg += max_r
-                        
-                        if delta_energy_uj_pkg > 1e-3 and delta_time_s > 0.001: # Use a small positive threshold for energy
-                            du_efficiency_approx = bits_this_kpm_interval / delta_energy_uj_pkg
-                            self._log(INFO, f"KPM InstEff ({e2_agent_id}): {bits_this_kpm_interval/1e6:.2f}Mb in ~{delta_time_s:.2f}s, PkgEnergyDelta: {delta_energy_uj_pkg/1e6:.2f}J, ApproxEff: {du_efficiency_approx:.2f} b/uJ")
-                    
-                    self.last_energy_reading_for_kpm_eff_uj = current_pkg_energy_uj
-                    self.last_kpm_report_time_for_eff_calc = current_report_time
-            # --- End Per-DU Approximate Efficiency ---
+                        if metric_name == 'DRB.RlcSduTransmittedVolumeDL': dl_kbits_this_period = float(value)
+                        elif metric_name == 'DRB.RlcSduTransmittedVolumeUL': ul_kbits_this_period = float(value)
+                    except (ValueError, TypeError): self._log(WARN, f"KPM CB: Metric '{metric_name}' value '{value}' invalid.")
+            
+            bits_dl_this_kpm_interval = dl_kbits_this_period * 1000.0
+            bits_ul_this_kpm_interval = ul_kbits_this_period * 1000.0
+            total_bits_this_kpm_interval = bits_dl_this_kpm_interval + bits_ul_this_kpm_interval
 
             with self.kpm_data_lock:
-                if e2_agent_id not in self.kpm_gnb_tracking:
-                    self.kpm_gnb_tracking[e2_agent_id] = {
-                        'bits_sum_for_main_interval_dl':0.0, 'bits_sum_for_main_interval_ul':0.0,
+                # --- Per-DU Approximate Efficiency Calculation & Logging ---
+                last_state = self.kpm_gnb_last_state.get(e2_agent_id)
+                
+                # Calculate per-DU efficiency if we have a previous state for this DU
+                if last_state and last_state.get('last_rapl_energy_uj') is not None and \
+                   current_package_energy_uj_snapshot is not None:
+                    
+                    delta_pkg_energy_uj = current_package_energy_uj_snapshot - last_state['last_rapl_energy_uj']
+                    if delta_pkg_energy_uj < 0: 
+                        max_r = self.max_energy_val_rapl 
+                        try: 
+                            with open(os.path.join(self.rapl_base_path, "max_energy_range_uj"),'r') as f_max_r: 
+                                max_r_val = int(f_max_r.read().strip());
+                                if max_r_val > 0: max_r = max_r_val
+                        except Exception: pass
+                        delta_pkg_energy_uj += max_r
+                    
+                    if delta_pkg_energy_uj > 1e-3 : # Check for minimal energy change
+                        du_efficiency_approx = total_bits_this_kpm_interval / delta_pkg_energy_uj
+                        self._log(INFO, f"DU_EFF_LIVE [{e2_agent_id}]: {total_bits_this_kpm_interval/1e6:.2f}Mb / {delta_pkg_energy_uj/1e6:.3f}J = {du_efficiency_approx:.2f} b/uJ")
+                
+                # Update/initialize last state for this DU
+                if current_package_energy_uj_snapshot is not None:
+                    self.kpm_gnb_last_state[e2_agent_id] = {
+                        'last_kpm_report_time': current_kpm_report_time,
+                        'last_rapl_energy_uj': current_package_energy_uj_snapshot
+                    }
+                # --- End Per-DU Approximate Efficiency ---
+
+                # Accumulate bits for the main print interval's server-wide calculation
+                if e2_agent_id not in self.accumulated_kpm_metrics:
+                    self.accumulated_kpm_metrics[e2_agent_id] = {
+                        'bits_sum_for_main_interval_dl':0.0, 
+                        'bits_sum_for_main_interval_ul':0.0,
                         'num_reports_for_main_interval':0 
                     }
                 
-                tracking_data = self.kpm_gnb_tracking[e2_agent_id]
-                tracking_data['bits_sum_for_main_interval_dl'] += bits_this_kpm_interval 
-                tracking_data['bits_sum_for_main_interval_ul'] += (ul_volume_kbits_in_period * 1000.0) 
-                tracking_data['num_reports_for_main_interval'] += 1
+                acc_data = self.accumulated_kpm_metrics[e2_agent_id]
+                acc_data['bits_sum_for_main_interval_dl'] += bits_dl_this_kpm_interval
+                acc_data['bits_sum_for_main_interval_ul'] += bits_ul_this_kpm_interval
+                acc_data['num_reports_for_main_interval'] += 1
                 
-                self._log(DEBUG_KPM, f"KPM CB (Delta Volume): {e2_agent_id}: Reported DL_kbit={dl_volume_kbits_in_period:.0f}, UL_kbit={ul_volume_kbits_in_period:.0f}")
-                self._log(DEBUG_KPM, f"KPM CB (Delta Volume): Accumulated for main interval for {e2_agent_id}: {tracking_data}")
+                self._log(DEBUG_KPM, f"KPM CB (Delta Volume): {e2_agent_id}: Added DL_b={bits_dl_this_kpm_interval:.0f}, UL_b={bits_ul_this_kpm_interval:.0f}")
+                self._log(DEBUG_KPM, f"KPM CB (Delta Volume): Accumulated for main interval for {e2_agent_id}: {acc_data}")
         
         except Exception as e: self._log(ERROR, f"Error processing KPM indication from {e2_agent_id}: {e}"); import traceback; traceback.print_exc()
 
     def _get_and_reset_accumulated_kpm_metrics(self) -> Dict[str, Dict[str, Any]]:
         with self.kpm_data_lock:
             snap = {}
-            for gnb_id, data in self.kpm_gnb_tracking.items():
+            for gnb_id, data in self.accumulated_kpm_metrics.items():
                 snap[gnb_id] = {
                     'dl_bits': data.get('bits_sum_for_main_interval_dl', 0.0), 
                     'ul_bits': data.get('bits_sum_for_main_interval_ul', 0.0),
@@ -423,11 +419,17 @@ class PowerManager(xAppBase):
         nodes = list(self.gnb_ids_map.values())
         if not nodes: self._log(WARN, "No gNB IDs for KPM."); return
         
-        # These periods are for the KPM subscription itself
+        metrics = ['DRB.RlcSduTransmittedVolumeDL', 'DRB.RlcSduTransmittedVolumeUL']
+        # KPM periods from config, default to 1s if not specified or if aligning with print_interval is not chosen
         kpm_report_p = int(self.config.get('kpm_report_period_ms', 1000)) 
         kpm_gran_p = int(self.config.get('kpm_granularity_period_ms', 1000))
         
-        metrics = ['DRB.RlcSduTransmittedVolumeDL', 'DRB.RlcSduTransmittedVolumeUL']
+        # Option: Align KPM reporting with app's print interval if desired for Option A accuracy
+        # if self.config.get('align_kpm_to_print_interval', False): # Add this to config.yaml if you want this behavior
+        #    kpm_report_p = self.print_interval_s * 1000
+        #    kpm_gran_p = self.print_interval_s * 1000
+        #    self._log(INFO, f"KPM Subscription: Aligning Report and Granularity period to app print_interval: {kpm_report_p}ms")
+
         self._log(INFO, f"KPM: Subscribing to metrics: {metrics} with ReportPeriod={kpm_report_p}ms, Granularity={kpm_gran_p}ms")
         
         style = 1; successes = 0
@@ -436,23 +438,19 @@ class PowerManager(xAppBase):
             if self.dry_run:
                 self._log(INFO, f"[DRY RUN] KPM Sub: Node {node_id}, Metrics {metrics}, Style {style}")
                 with self.kpm_data_lock: 
-                    if node_id not in self.kpm_gnb_tracking: 
-                        self.kpm_gnb_tracking[node_id] = {
-                            'bits_sum_for_main_interval_dl':0.0, 
-                            'bits_sum_for_main_interval_ul':0.0, 
-                            'num_reports_for_main_interval':0
-                        }
+                    if node_id not in self.accumulated_kpm_metrics: 
+                        self.accumulated_kpm_metrics[node_id] = {'bits_sum_for_main_interval_dl':0.0, 'bits_sum_for_main_interval_ul':0.0, 'num_reports_for_main_interval':0}
+                    if node_id not in self.kpm_gnb_last_state:
+                        self.kpm_gnb_last_state[node_id] = {'last_kpm_report_time': 0.0, 'last_rapl_energy_uj': None}
                 successes+=1; continue
             try:
                 self._log(INFO, f"Subscribing KPM: Node {node_id}, Metrics {metrics}, Report {kpm_report_p}ms, Granularity {kpm_gran_p}ms, Style {style}")
                 self.e2sm_kpm.subscribe_report_service_style_1(node_id, kpm_report_p, metrics, kpm_gran_p, cb_adapter)
-                with self.kpm_data_lock: # Initialize tracking for this gNB
-                    if node_id not in self.kpm_gnb_tracking: 
-                        self.kpm_gnb_tracking[node_id] = {
-                            'bits_sum_for_main_interval_dl':0.0, 
-                            'bits_sum_for_main_interval_ul':0.0, 
-                            'num_reports_for_main_interval':0
-                        }
+                with self.kpm_data_lock: # Initialize tracking structures
+                    if node_id not in self.accumulated_kpm_metrics: 
+                        self.accumulated_kpm_metrics[node_id] = {'bits_sum_for_main_interval_dl':0.0, 'bits_sum_for_main_interval_ul':0.0, 'num_reports_for_main_interval':0}
+                    if node_id not in self.kpm_gnb_last_state:
+                        self.kpm_gnb_last_state[node_id] = {'last_kpm_report_time': 0.0, 'last_rapl_energy_uj': None} # Init with 0 time, None energy
                 successes+=1
             except Exception as e: self._log(ERROR, f"KPM subscription failed for {node_id}: {e}"); import traceback; traceback.print_exc()
         if successes > 0: self._log(INFO, f"--- KPM Subscriptions: {successes} nodes attempted. ---")
@@ -462,30 +460,30 @@ class PowerManager(xAppBase):
     def run_power_management_xapp(self):
         if os.geteuid() != 0 and not self.dry_run: print("E: Must be root for live run."); sys.exit(1)
         try:
-            # Initialize for app's main print interval energy calculation
-            self.energy_at_last_log_uj = self._read_current_energy_uj()
-            if self.energy_at_last_log_uj is None and not self.dry_run: self._log(WARN, "Could not get initial package energy for main interval.")
-            
-            # Initialize for per-KPM-interval approximate efficiency
-            with self.kpm_eff_lock:
-                self.last_energy_reading_for_kpm_eff_uj = self._read_current_energy_uj()
-                self.last_kpm_report_time_for_eff_calc = time.monotonic()
-            if self.last_energy_reading_for_kpm_eff_uj is None and not self.dry_run:
-                self._log(WARN, "Could not get initial package energy for KPM-interval efficiency.")
-
-
+            self.energy_at_last_log_uj = self._read_current_energy_uj() # For main interval energy delta
             if self.ru_timing_core_indices: self._log(INFO, "Priming MSR..."); self._update_ru_core_msr_data(); time.sleep(0.2); self._update_ru_core_msr_data(); self._log(INFO, "MSR primed.")
-            else: self._log(INFO, "No RU timing cores defined, MSR priming skipped.")
+            
             self._log(INFO, "Attempting to set initial TDP..."); pwr, ok = self._get_pkg_power_w(); time.sleep(0.2); pwr, ok = self._get_pkg_power_w()
             if ok and pwr > 1.0: self._set_tdp_limit_w(max(self.tdp_min_w, min(pwr, self.tdp_max_w)), context=f"Initial PkgWatt {pwr:.1f}W. Initial TDP Set") 
             else: self._log(WARN, "Invalid initial PkgWatt."); self._set_tdp_limit_w(self._read_current_tdp_limit_w() if not self.dry_run else self.current_tdp_w, context="Initial TDP Set (fallback)") 
             self._log(INFO, f"Effective Initial TDP: {self.current_tdp_w:.1f}W.")
+            
             self._setup_intel_sst(); self._setup_kpm_subscriptions() 
+            
+            # Initialize last_rapl_energy_uj for all gNBs before first KPM report might arrive
+            # This ensures the first per-DU efficiency calculation has a valid baseline energy
+            initial_pkg_energy_for_kpm = self._read_current_energy_uj()
+            initial_time_for_kpm = time.monotonic()
+            with self.kpm_data_lock:
+                for gnb_id in self.gnb_ids_map.values():
+                    self.kpm_gnb_last_state[gnb_id] = {
+                        'last_kpm_report_time': initial_time_for_kpm,
+                        'last_rapl_energy_uj': initial_pkg_energy_for_kpm
+                    }
+
             self.last_tdp_adjustment_time = time.monotonic(); last_print_time = time.monotonic()
             self._log(INFO, f"\n--- Starting Monitoring Loop ({'DRY RUN' if self.dry_run else 'LIVE RUN'}) ---")
-            self._log(INFO, f"Target RU CPU: {self.target_ru_cpu_usage:.2f}% | RU Cores: {self.ru_timing_core_indices or 'NONE'}")
-            self._log(INFO, f"TDP Update: {self.tdp_update_interval_s}s | Print: {self.print_interval_s}s | TDP Range: {self.tdp_min_w}W-{self.tdp_max_w}W")
-            self._log(INFO, f"KPM Metrics: DRB.RlcSduTransmittedVolumeDL/UL from gNBs: {', '.join(self.gnb_ids_map.values()) or 'NONE'}")
+            # ... (other startup logs)
 
             while True:
                 start_time = time.monotonic()
@@ -496,40 +494,43 @@ class PowerManager(xAppBase):
                     self._adjust_tdp(control_val); self.last_tdp_adjustment_time = now
                 
                 if now - last_print_time >= self.print_interval_s:
-                    pwr_w, pwr_ok = self._get_pkg_power_w(); int_e_uj = self._get_interval_energy_uj()
+                    pwr_w, pwr_ok = self._get_pkg_power_w(); int_e_uj = self._get_interval_energy_uj() # Energy over print_interval_s
                     kpm_snapshot = self._get_and_reset_accumulated_kpm_metrics() 
                     
-                    dl_b, ul_b = sum(d.get('dl_bits',0.0) for d in kpm_snapshot.values()), sum(d.get('ul_bits',0.0) for d in kpm_snapshot.values())
-                    tot_b = dl_b + ul_b
+                    # These are bits accumulated from KPM reports during the print_interval_s
+                    dl_b = sum(d.get('dl_bits',0.0) for d in kpm_snapshot.values())
+                    ul_b = sum(d.get('ul_bits',0.0) for d in kpm_snapshot.values())
+                    tot_b_from_kpm_sum = dl_b + ul_b # Total bits from summing KPM deltas
                     num_kpm_reports_total = sum(d.get('reports_in_interval', 0) for d in kpm_snapshot.values())
 
                     srv_eff = "N/A"
-                    if int_e_uj is not None and int_e_uj > 1e-9 : 
-                        srv_eff = f"{tot_b/int_e_uj:.2f} b/uJ"
-                    elif tot_b > 1e-9 : srv_eff = "inf b/uJ"
+                    if int_e_uj is not None and int_e_uj > 1e-3 : # Use a smaller threshold for energy delta
+                        srv_eff = f"{tot_b_from_kpm_sum/int_e_uj:.2f} b/uJ"
+                    elif tot_b_from_kpm_sum > 1e-9: srv_eff = "inf b/uJ"
                     else: srv_eff = "0.00 b/uJ"
                         
                     clos_eff_strs = []
+                    # ... (CLoS efficiency calculation remains the same, using tot_b_from_kpm_sum from kpm_snapshot)
                     if self.clos_to_du_names_map:
                         for cid, dus in self.clos_to_du_names_map.items():
                             clos_b = sum(kpm_snapshot.get(self.gnb_ids_map.get(du_n),{}).get('dl_bits',0.0) + 
                                          kpm_snapshot.get(self.gnb_ids_map.get(du_n),{}).get('ul_bits',0.0) 
                                          for du_n in dus if self.gnb_ids_map.get(du_n))
                             eff_str = "N/A";
-                            if int_e_uj is not None and int_e_uj > 1e-9 : 
+                            if int_e_uj is not None and int_e_uj > 1e-3 : 
                                 eff_str = f"{clos_b/int_e_uj:.2f} b/uJ"
                             elif clos_b > 1e-9 : eff_str = "inf b/uJ"
                             else: eff_str = "0.00 b/uJ"
                             clos_eff_strs.append(f"CLOS{cid}:{eff_str} ({clos_b/1e6:.2f}Mb)")
-                    ru_usage = ", ".join([f"C{i}:{self.ru_core_msr_prev_data[i].busy_percent:>6.2f}%" if i in self.ru_core_msr_prev_data else f"C{i}:N/A" for i in self.ru_timing_core_indices]) or "N/A"
                     
+                    ru_usage = ", ".join([f"C{i}:{self.ru_core_msr_prev_data[i].busy_percent:>6.2f}%" if i in self.ru_core_msr_prev_data else f"C{i}:N/A" for i in self.ru_timing_core_indices]) or "N/A"
                     pkg_pwr_log_str = f"{pwr_w:.1f}" if pwr_ok else "N/A"
                     energy_interval_j_str = f"{int_e_uj/1e6:.2f}" if int_e_uj is not None else "N/A"
 
                     log_parts = [f"RU:[{ru_usage}] (AvgMax:{control_val:>6.2f}%)", f"TDP:{self.current_tdp_w:>5.1f}W", 
                                  f"PkgPwr:{pkg_pwr_log_str}W", f"IntEgy:{energy_interval_j_str}J",
                                  f"KPMreps:{num_kpm_reports_total}", 
-                                 f"TotBits:{tot_b/1e6:.2f}Mb", f"SrvEff:{srv_eff}", f"CLoSEff:[{' | '.join(clos_eff_strs) or 'No CLoS DUs'}]"]
+                                 f"TotBits:{tot_b_from_kpm_sum/1e6:.2f}Mb", f"SrvEff:{srv_eff}", f"CLoSEff:[{' | '.join(clos_eff_strs) or 'No CLoS DUs'}]"]
                     self._log(INFO, " | ".join(log_parts)); last_print_time = now
                 time.sleep(max(0, 1.0 - (time.monotonic() - start_time)))
         except KeyboardInterrupt: self._log(INFO, f"\nMonitoring loop interrupted by user.")
