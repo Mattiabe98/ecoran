@@ -34,7 +34,7 @@ gnb_ids:
 # Monitoring & Logging
 # ------------------------------------------------------------------------------
 # Interval (in seconds) for printing monitoring logs to the console.
-print_interval: 5
+print_interval: 10
 
 # RU_Timing Cores: These are critical cores whose CPU utilization will be
 # actively monitored. The TDP adjustment algorithm will try to keep the
