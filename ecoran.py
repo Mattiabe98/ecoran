@@ -440,8 +440,8 @@ class PowerManager(xAppBase):
         if not nodes: self._log(WARN, "No gNB IDs for KPM."); return
         
         metrics = ['DRB.RlcSduTransmittedVolumeDL', 'DRB.RlcSduTransmittedVolumeUL']
-        kpm_report_p = int(self.config.get('kpm_report_period_ms', 1000)) 
-        kpm_gran_p = int(self.config.get('kpm_granularity_period_ms', 1000))
+        kpm_report_p = int(self.config.get('kpm_report_period_ms', 5000)) 
+        kpm_gran_p = int(self.config.get('kpm_granularity_period_ms', 5000))
         
         self._log(INFO, f"KPM: Subscribing to metrics: {metrics} with ReportPeriod={kpm_report_p}ms, Granularity={kpm_gran_p}ms")
         
