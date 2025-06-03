@@ -12,7 +12,9 @@ import signal
 # Ensure lib.xAppBase is accessible, e.g., in PYTHONPATH or same directory
 # If 'lib' is a package, it might be 'from .lib.xAppBase import xAppBase' if structure allows
 # For this example, assuming 'from lib.xAppBase import xAppBase' works.
+
 try:
+    sys.path.append(os.path.join(os.path.dirname(__file__)))
     from lib.xAppBase import xAppBase
 except ImportError:
     print("E: Failed to import xAppBase from lib.xAppBase. Ensure the library is correctly installed and accessible.")
