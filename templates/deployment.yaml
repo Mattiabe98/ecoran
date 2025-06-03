@@ -18,13 +18,12 @@ spec:
         - name: ecoran
           image: "docker.io/boing7898/ecoran:latest"
           imagePullPolicy: Always
-          command: ["/bin/bash", "-c"]
-          args:
-            - |
-              mkdir -p /tmp/ecoran && \
-              cp -rL /opt/ecoran/* /tmp/ecoran/ && \
-              cd /tmp/ecoran && \
-              sleep infinity;
+          env:
+            PYTHONUNBUFFERED: "0"
+            PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: "python"
+            RMR_SEED_RT: "/opt/ric/config/uta-rtg.rt"
+            RMR_SRC_ID: "xapp-service"
+            RMR_RTG_SVC: "4561" # leave empty, so RMR works correctly with RT Manager Simulator
           volumeMounts:
             - name: xapp-rtg
               mountPath: /opt/ric/config/uta-rtg.rt
