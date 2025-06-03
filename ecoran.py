@@ -54,7 +54,7 @@ class CoreMSRData:
         self.busy_percent: float = 0.0
 
 class PowerManager(xAppBase):
-    MAX_VOLUME_COUNTER_BYTES = (2**64) - 1 # Adjust if your counter size is different (e.g., 2**64 - 1)
+    MAX_VOLUME_COUNTER_BYTES = (2**64) - 1 
 
     def __init__(self, config_path: str, http_server_port: int, rmr_port: int, kpm_ran_func_id: int = 2):
         self.config_path = config_path
@@ -210,29 +210,36 @@ class PowerManager(xAppBase):
         try: subprocess.run(cmd_str_list, shell=False, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as e:
             msg = f"Cmd '{e.cmd}' failed ({e.returncode}). STDOUT: {e.stdout.strip()} STDERR: {e.stderr.strip()}"
-            self._log(ERROR, msg);
+            self._log(ERROR, msg)
             if not self.dry_run: raise RuntimeError(msg)
         except FileNotFoundError:
             msg = f"Cmd '{cmd_str_list[0]}' not found."
-            self._log(ERROR, msg);
+            self._log(ERROR, msg)
             if not self.dry_run: raise RuntimeError(msg)
 
     def _setup_intel_sst(self):
         self._log(INFO, "--- Configuring Intel SST-CP ---")
         try:
             self._run_command(["intel-speed-select", "core-power", "enable"])
-            for cid, freq in self.config.get('clos_min_frequency', {}).items(): self._run_command(["intel-speed-select", "core-power", "config", "-c", str(cid), "--min", str(freq)])
+            for cid_key, freq in self.config.get('clos_min_frequency', {}).items(): 
+                self._run_command(["intel-speed-select", "core-power", "config", "-c", str(cid_key), "--min", str(freq)])
             ran_cores = {n: self._parse_core_list_string(str(cs)) for n, cs in self.config.get('ran_cores', {}).items()}
             for cid_key, comps in self.config.get('clos_association', {}).items():
                 cid = int(cid_key)
                 assoc_cores = set(c for comp in comps if isinstance(comps,list) for c in ran_cores.get(comp,[]))
-                if cid == 0 and self.ru_timing_core_indices: assoc_cores.update(self.ru_timing_core_indices)
-                if assoc_cores: self._run_command(["intel-speed-select", "-c", ",".join(map(str, sorted(list(assoc_cores)))), "core-power", "assoc", "-c", str(cid)])
-                elif cid == 0 and self.ru_timing_core_indices and not comps: self._run_command(["intel-speed-select", "-c", ",".join(map(str, sorted(self.ru_timing_core_indices))), "core-power", "assoc", "-c", str(cid)])
-                else: self._log(WARN, f"No cores for CLOS {cid}.")
+                if cid == 0 and self.ru_timing_core_indices: 
+                    self._log(INFO, f"Ensuring RU_Timing cores {self.ru_timing_core_indices} in CLOS 0.")
+                    assoc_cores.update(self.ru_timing_core_indices)
+                if assoc_cores: 
+                    self._run_command(["intel-speed-select", "-c", ",".join(map(str, sorted(list(assoc_cores)))), "core-power", "assoc", "-c", str(cid)])
+                elif cid == 0 and self.ru_timing_core_indices and not comps: 
+                    self._log(INFO, f"Assigning only RU_Timing cores {self.ru_timing_core_indices} to CLOS 0.")
+                    self._run_command(["intel-speed-select", "-c", ",".join(map(str, sorted(self.ru_timing_core_indices))), "core-power", "assoc", "-c", str(cid)])
+                else: 
+                    self._log(WARN, f"No cores for CLOS {cid}.")
             self._log(INFO, "--- Intel SST-CP Configuration Complete ---")
         except Exception as e: 
-            self._log(ERROR, f"Intel SST-CP setup error: {e}") # Corrected line
+            self._log(ERROR, f"Intel SST-CP setup error: {e}") # Corrected syntax
             if not self.dry_run: 
                 raise RuntimeError(str(e))
 
@@ -259,8 +266,15 @@ class PowerManager(xAppBase):
             self._log(INFO, f"{context}. New Target TDP: {new_tdp_w:.1f}W")
             with open(self.power_limit_uw_file, 'w') as f: f.write(str(clamped_uw))
             self.current_tdp_w = new_tdp_w
-        except OSError as e: self._log(ERROR, f"OSError writing TDP to {self.power_limit_uw_file}: {e}"); if not self.dry_run: raise RuntimeError(str(e))
-        except Exception as e: self._log(ERROR, f"Exception writing TDP: {e}"); if not self.dry_run: raise RuntimeError(str(e))
+        except OSError as e: 
+            self._log(ERROR, f"OSError writing TDP to {self.power_limit_uw_file}: {e}") # Corrected syntax
+            if not self.dry_run: 
+                raise RuntimeError(str(e))
+        except Exception as e: 
+            self._log(ERROR, f"Exception writing TDP: {e}") # Corrected syntax
+            if not self.dry_run: 
+                raise RuntimeError(str(e))
+
 
     def _adjust_tdp(self, control_ru_cpu_usage: float):
         error = self.target_ru_cpu_usage - control_ru_cpu_usage; abs_error = abs(error) 
@@ -287,7 +301,7 @@ class PowerManager(xAppBase):
                         try: 
                             with open(os.path.join(self.rapl_base_path, "max_energy_range_uj"),'r') as f_max_r: 
                                 max_r_val = int(f_max_r.read().strip())
-                                if max_r_val > 0: max_r = max_r_val # Use if valid
+                                if max_r_val > 0: max_r = max_r_val
                         except Exception: pass
                         de += max_r
                     pwr_w = (de / 1e6) / dt
