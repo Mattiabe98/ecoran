@@ -1,7 +1,7 @@
 FROM python:3.8-slim as builder
 
 RUN apt-get update -y && \
-    apt-get install -y git wget curl nano linux-tools-common \
+    apt-get install -y git wget curl nano \
     libffi-dev libnl-3-dev libnl-genl-3-dev \
     python3-psutil python3-yaml
 
