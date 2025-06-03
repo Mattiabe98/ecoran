@@ -3,7 +3,7 @@ kind: Service
 metadata:
   name: xapp-service
   labels:
-    app: EcoRAN
+    app: ecoran
 spec:
   type: ClusterIP
   clusterIP: None
@@ -21,4 +21,4 @@ spec:
       protocol: TCP
       name: http
   selector:
-    app: EcoRAN
+    app: ecoran
