@@ -17,7 +17,7 @@ spec:
       containers:
         - name: ecoran
           image: "docker.io/boing7898/ecoran:latest"
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           # command: ["sleep"]
           # args: ["infinity"]
           env:
