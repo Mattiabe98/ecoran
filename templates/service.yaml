@@ -12,6 +12,10 @@ spec:
       targetPort: 4560
       protocol: TCP
       name: rmr
+    - port: 4561
+      targetPort: 4561
+      protocol: TCP
+      name: rmr
     - port: 55555
       targetPort: 55555
       protocol: UDP
