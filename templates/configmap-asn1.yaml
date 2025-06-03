@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: xapp-asn1
+data:
+{{- $root := . }}
+{{- range $f, $_ := .Files.Glob "lib/asn1/*" }}
+  {{ base $f }}: |-
+{{ tpl ($root.Files.Get $f) $root | indent 4 }}
+{{- end }}
