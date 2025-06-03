@@ -188,18 +188,42 @@ class PowerManager(xAppBase):
             self.logger.debug(message)
         # SILENT level effectively does nothing if logger/handler levels are set higher
 
-    # ... (rest of the methods from previous version, e.g., _validate_config, _load_config, etc.) ...
-    # Make sure they use self._log(LEVEL, "message") instead of print()
-    # Example for _validate_config first lines:
     def _validate_config(self):
         if not os.path.exists(self.rapl_base_path) or not os.path.exists(self.power_limit_uw_file):
-            # Critical errors that prevent startup should still print to stderr and exit
             print(f"E: RAPL path {self.rapl_base_path} or power limit file missing. Exiting."); sys.exit(1) 
         if not os.path.exists(self.energy_uj_file):
              self._log(WARN, f"Energy file {self.energy_uj_file} not found. PkgPower/Efficiency readings will be N/A.")
-        # ... rest of _validate_config using self._log ...
-        # ... (Ensure other methods like _parse_core_list_string, _run_command also use self._log) ...
-        # ... (the full class from previous message, just ensure prints are replaced by self._log) ...
+        if not self.ru_timing_core_indices and self.config.get('ru_timing_cores'):
+            self._log(WARN, "'ru_timing_cores' is defined but resulted in an empty list. MSR monitoring inactive.")
+        elif not self.ru_timing_core_indices:
+             self._log(INFO, "No 'ru_timing_cores' defined. MSR-based CPU utilization monitoring inactive.")
+        elif self.ru_timing_core_indices:
+            test_core = self.ru_timing_core_indices[0]; msr_path_test = f'/dev/cpu/{test_core}/msr'
+            if not os.path.exists(msr_path_test): print(f"E: MSR device file {msr_path_test} for core {test_core} not found. Exiting."); sys.exit(1)
+            if read_msr_direct(test_core, MSR_IA32_TSC) is None:
+                try: open(msr_path_test, 'rb').close()
+                except PermissionError: print(f"E: Permission denied for MSR {msr_path_test}. Run as root. Exiting."); sys.exit(1)
+                except Exception as e: print(f"E: Error opening MSR {msr_path_test}: {e}. Exiting."); sys.exit(1)
+                print(f"E: Failed initial MSR read on core {test_core}. Exiting."); sys.exit(1)
+            self._log(INFO, "MSR access test passed.")
+        try: subprocess.run([self.intel_sst_path, "--version"], capture_output=True, check=True, text=True)
+        except Exception as e: print(f"E: '{self.intel_sst_path}' command failed: {e}. Exiting."); sys.exit(1)
+        if self.tdp_update_interval_s <= 0: print(f"E: 'tdp_update_interval_s' must be positive. Exiting."); sys.exit(1)
+        if not (0 < self.tdp_adj_sensitivity_factor < 1): print(f"E: 'tdp_adjustment_sensitivity' must be > 0 and < 1. Exiting."); sys.exit(1)
+        if self.tdp_adj_step_w_small <=0 : print(f"E: 'tdp_adjustment_step_w_small' must be positive. Exiting."); sys.exit(1)
+        if self.tdp_adj_step_w_large <=0 : print(f"E: 'tdp_adjustment_step_w_large' must be positive. Exiting."); sys.exit(1)
+        if self.adaptive_step_far_thresh_factor <=1.0 : print(f"E: 'adaptive_step_far_threshold_factor' must be > 1.0. Exiting."); sys.exit(1)
+        if self.max_samples_cpu_avg <=0 : print(f"E: 'max_cpu_usage_samples' must be positive. Exiting."); sys.exit(1)
+        if not (0 < self.target_ru_cpu_usage <= 100): print(f"E: 'target_ru_timing_cpu_usage' must be > 0 and <= 100. Exiting."); sys.exit(1)
+        self._log(INFO, "Configuration and system checks passed.")
+
+    def _load_config(self) -> Dict[str, Any]:
+        try:
+            with open(self.config_path, 'r') as f: return yaml.safe_load(f)
+        except FileNotFoundError: print(f"E: Config file '{self.config_path}' not found. Exiting."); sys.exit(1)
+        except yaml.YAMLError as e: print(f"E: Could not parse config file '{self.config_path}': {e}. Exiting."); sys.exit(1)
+
+    def _parse_core_list_string(self, core_str: str) -> List[int]:
 
     def _parse_core_list_string(self, core_str: str) -> List[int]:
         cores: Set[int] = set();
