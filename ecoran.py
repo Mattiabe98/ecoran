@@ -489,8 +489,8 @@ class PowerManager(xAppBase):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="EcoRAN Power Manager with KPM xApp")
     parser.add_argument("config_path", type=str, help="Path to YAML config.")
-    parser.add_argument("--http_server_port",type=int,default=8091,help="HTTP server port.")
-    parser.add_argument("--rmr_port",type=int,default=4561,help="RMR port.")
+    parser.add_argument("--http_server_port",type=int,default=8090,help="HTTP server port.")
+    parser.add_argument("--rmr_port",type=int,default=4560,help="RMR port.")
     args = parser.parse_args()
     manager = None
     try:
