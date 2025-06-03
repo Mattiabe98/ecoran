@@ -359,14 +359,25 @@ class PowerManager(xAppBase):
                 else: self._log(WARN, f"KPM CB: Metric '{metric_name}' from {e2_agent_id} unexpected value format: {value_list}.")
 
             delta_dl_bits, delta_ul_bits = 0.0, 0.0
+
             with self.kpm_data_lock:
-                acc_data = self.accumulated_kpm_metrics.get(e2_agent_id)
-                if acc_data is None: 
-                    self.accumulated_kpm_metrics[e2_agent_id] = {'dl_bits_interval_sum':0.0,'ul_bits_interval_sum':0.0,
-                                                                 'prev_dl_volume':current_dl_volume_bytes, 'prev_ul_volume':current_ul_volume_bytes,
-                                                                 'num_reports_processed':1 }
+                # Ensure the entry for e2_agent_id exists and is initialized properly
+                if e2_agent_id not in self.accumulated_kpm_metrics:
+                    self.accumulated_kpm_metrics[e2_agent_id] = {
+                        'dl_bits_interval_sum': 0.0, 
+                        'ul_bits_interval_sum': 0.0,
+                        'prev_dl_volume': current_dl_volume_bytes, # Initialize with current on first report
+                        'prev_ul_volume': current_ul_volume_bytes, # Initialize with current on first report
+                        'num_reports_processed': 0 # Will be incremented to 1 below
+                    }
                     self._log(DEBUG_KPM, f"KPM CB (Volume): Initialized for {e2_agent_id} with DLVol:{current_dl_volume_bytes}, ULVol:{current_ul_volume_bytes}")
-                else: 
+                    # For the very first report, delta_dl_bits and delta_ul_bits will remain 0.0
+                
+                # Now, acc_data is guaranteed to exist and be (at least initially) populated
+                acc_data = self.accumulated_kpm_metrics[e2_agent_id]
+
+                # Only calculate delta if this is NOT the very first report (where prev_volumes were just set)
+                if acc_data['num_reports_processed'] > 0: # This check ensures prev_dl/ul_volume are from a *previous* report
                     prev_dl = acc_data.get('prev_dl_volume', current_dl_volume_bytes) 
                     prev_ul = acc_data.get('prev_ul_volume', current_ul_volume_bytes)
                     
@@ -374,21 +385,29 @@ class PowerManager(xAppBase):
                     delta_ul_bytes = current_ul_volume_bytes - prev_ul
 
                     if delta_dl_bytes < 0: 
-                        self._log(WARN, f"KPM CB: DL Volume counter wrapped for {e2_agent_id}. current: {current_dl_volume_bytes}, prev: {prev_dl}. Applying wraparound with MAX_VAL={self.MAX_VOLUME_COUNTER_BYTES}.")
+                        self._log(WARN, f"KPM CB: DL Volume counter wrapped for {e2_agent_id}. current: {current_dl_volume_bytes}, prev: {prev_dl}. Applying wraparound.")
                         delta_dl_bytes += (self.MAX_VOLUME_COUNTER_BYTES + 1)
                     if delta_ul_bytes < 0:
-                        self._log(WARN, f"KPM CB: UL Volume counter wrapped for {e2_agent_id}. current: {current_ul_volume_bytes}, prev: {prev_ul}. Applying wraparound with MAX_VAL={self.MAX_VOLUME_COUNTER_BYTES}.")
+                        self._log(WARN, f"KPM CB: UL Volume counter wrapped for {e2_agent_id}. current: {current_ul_volume_bytes}, prev: {prev_ul}. Applying wraparound.")
                         delta_ul_bytes += (self.MAX_VOLUME_COUNTER_BYTES + 1)
                     
-                    delta_dl_bits, delta_ul_bits = delta_dl_bytes * 8.0, delta_ul_bytes * 8.0
-                    
-                    acc_data.update({'prev_dl_volume':current_dl_volume_bytes, 'prev_ul_volume':current_ul_volume_bytes,
-                                     'dl_bits_interval_sum': acc_data['dl_bits_interval_sum'] + delta_dl_bits,
-                                     'ul_bits_interval_sum': acc_data['ul_bits_interval_sum'] + delta_ul_bits,
-                                     'num_reports_processed': acc_data['num_reports_processed'] + 1})
-                    self._log(DEBUG_KPM, f"KPM CB (Vol): {e2_agent_id}: Ddl_B={delta_dl_bytes:.0f}, Dul_B={delta_ul_bytes:.0f}, Ddl_b={delta_dl_bits:.0f}, Dul_b={delta_ul_bits:.0f}")
-                    self._log(DEBUG_KPM, f"KPM CB (Vol): Accumulated for {e2_agent_id}: {acc_data}")
-        except Exception as e: self._log(ERROR, f"Error processing KPM indication from {e2_agent_id}: {e}"); import traceback; traceback.print_exc()
+                    delta_dl_bits = delta_dl_bytes * 8.0
+                    delta_ul_bits = delta_ul_bytes * 8.0
+                
+                # Update stored previous values for the *next* callback
+                acc_data['prev_dl_volume'] = current_dl_volume_bytes
+                acc_data['prev_ul_volume'] = current_ul_volume_bytes
+                
+                # Accumulate the calculated deltas
+                acc_data['dl_bits_interval_sum'] += delta_dl_bits
+                acc_data['ul_bits_interval_sum'] += delta_ul_bits
+                acc_data['num_reports_processed'] += 1
+                
+                self._log(DEBUG_KPM, f"KPM CB (Volume): For {e2_agent_id}: Ddl_B={delta_dl_bytes if acc_data['num_reports_processed'] > 1 else 0:.0f}, Dul_B={delta_ul_bytes if acc_data['num_reports_processed'] > 1 else 0:.0f}, Ddl_b={delta_dl_bits:.0f}, Dul_b={delta_ul_bits:.0f}")
+                self._log(DEBUG_KPM, f"KPM CB (Volume): Accumulated for {e2_agent_id}: {acc_data}")
+        
+        except Exception as e:
+            self._log(ERROR, f"Error processing KPM indication from {e2_agent_id}: {e}"); import traceback; traceback.print_exc()
 
     def _get_and_reset_accumulated_kpm_metrics(self) -> Dict[str, Dict[str, Any]]:
         with self.kpm_data_lock:
