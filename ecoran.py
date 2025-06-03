@@ -220,7 +220,10 @@ class PowerManager(xAppBase):
             msg = f"Cmd '{e.cmd}' fail ({e.returncode}).SOUT:{e.stdout.strip()} SERR:{e.stderr.strip()}"
             self._log(ERROR, msg);
             if not self.dry_run: raise RuntimeError(msg)
-        except FileNotFoundError: self._log(ERROR, f"Cmd '{cmd[0]}' not found."); if not self.dry_run: raise RuntimeError(f"Cmd not found: {cmd[0]}")
+        except FileNotFoundError:
+            self._log(ERROR, f"Cmd '{cmd[0]}' not found.")
+            if not self.dry_run:
+                raise RuntimeError(f"Cmd not found: {cmd[0]}")
 
     def _setup_intel_sst(self):
         self._log(INFO, "--- Configuring Intel SST-CP ---")
