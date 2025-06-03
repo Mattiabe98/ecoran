@@ -69,6 +69,7 @@ COPY ./ric-plt-xapp-frame-py.patch .
 RUN git apply ./ric-plt-xapp-frame-py.patch
 
 # Install xApp Framework
+WORKDIR /opt/
 RUN pip install -e ./ric-plt-xapp-frame-py
 
 # Copy your app and config
