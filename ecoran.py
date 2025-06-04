@@ -15,10 +15,17 @@ import math
 import numpy as np
 
 try:
-    from lib.xAppBase import xAppBase
+    from lib.xAppBase import xAppBase # Assuming this is in PYTHONPATH or ./lib/
 except ImportError:
-    print("E: Failed to import xAppBase from lib.xAppBase. Ensure the library is correctly installed and accessible.")
-    sys.exit(1)
+    # Attempt relative import if direct fails (e.g. when run as a script)
+    try:
+        # This is a common way to handle lib imports when the script is in the same dir or one level up
+        sys.path.append(os.path.join(os.path.dirname(__file__), '..')) # Adjust if lib is elsewhere
+        from lib.xAppBase import xAppBase
+    except ImportError:
+        print("E: Failed to import xAppBase from lib.xAppBase. Ensure the library is correctly installed and accessible.")
+        sys.exit(1)
+
 
 # MSR Addresses
 MSR_IA32_TSC = 0x10
@@ -39,14 +46,14 @@ LOGGING_LEVEL_MAP = {
 
 # --- Context Feature Indices (Example) ---
 CTX_IDX_BIAS = 0
-CTX_IDX_TOTAL_BITS_NORM = 1
+CTX_IDX_TOTAL_BITS_NORM = 1 # Bits per second normalized
 CTX_IDX_NUM_UES_NORM = 2
 CTX_IDX_NUM_ACTIVE_DUS_NORM = 3
 CTX_IDX_RU_CPU_NORM = 4
 CTX_IDX_CURRENT_TDP_NORM = 5
-# CONTEXT_DIMENSION will be set from config
+# CONTEXT_DIMENSION will be set from config, ensure it matches the number of features used + bias
 
-def read_msr_direct(cpu_id: int, reg: int) -> Optional[int]: # Same as before
+def read_msr_direct(cpu_id: int, reg: int) -> Optional[int]:
     try:
         with open(f'/dev/cpu/{cpu_id}/msr', 'rb') as f:
             f.seek(reg)
@@ -55,18 +62,20 @@ def read_msr_direct(cpu_id: int, reg: int) -> Optional[int]: # Same as before
     except FileNotFoundError: return None
     except PermissionError: return None
     except OSError as e:
-        if e.errno != 2 and e.errno != 13:
+        # Suppress "No such device" or "Permission denied" during MSR read if core is offline/hotplugged
+        # or if permissions are insufficient for a specific core momentarily.
+        if e.errno != 2 and e.errno != 13 and e.errno != 19: # errno 19 is ENODEV (No such device)
              print(f"W: OSError reading MSR {hex(reg)} on CPU {cpu_id}: {e}", file=sys.stderr)
         return None
     except Exception as e:
         print(f"E: Unexpected error reading MSR {hex(reg)} on CPU {cpu_id}: {e}", file=sys.stderr)
         return None
 
-class CoreMSRData: # Same as before
+class CoreMSRData:
     def __init__(self, core_id: int):
         self.core_id, self.mperf, self.tsc, self.busy_percent = core_id, None, None, 0.0
 
-class LinUCBContextualBandit: # Same as before
+class LinUCBContextualBandit:
     def __init__(self, arm_keys: List[str], context_dim: int, alpha: float, lambda_reg: float = 0.1):
         self.arm_keys = arm_keys
         self.n_arms = len(arm_keys)
@@ -81,28 +90,40 @@ class LinUCBContextualBandit: # Same as before
         self.logger = logging.getLogger("EcoRANPowerManager.LinUCB")
 
     def select_arm(self, context_vector: np.array) -> str:
+        if not self.arm_keys: # Should not happen if initialized correctly
+            self.logger.error("LinUCB: No arms defined!")
+            return "hold" # A safe default if possible
+
         if context_vector.shape[0] != self.context_dim:
-            self.logger.error(f"Context vector dim {context_vector.shape[0]} != expected {self.context_dim}. Using random arm.")
+            self.logger.error(f"LinUCB: Context vector dim {context_vector.shape[0]} != expected {self.context_dim}. Using random arm.")
             return random.choice(self.arm_keys)
 
-
         max_ucb = -float('inf')
-        # Ensure selected_arm_key is always initialized, e.g. to the first arm or a random one
-        selected_arm_key = self.arm_keys[0] if self.arm_keys else random.choice(list(self.A.keys()))
-
-
+        selected_arm_key = self.arm_keys[0] # Default initialization
         ucb_scores_debug = {}
 
         for arm_key in self.arm_keys:
             try:
                 A_inv = np.linalg.inv(self.A[arm_key])
             except np.linalg.LinAlgError:
-                self.logger.error(f"LinUCB: Matrix A for arm {arm_key} is singular. Using identity fallback.")
-                A_inv = np.identity(self.context_dim) / self.lambda_reg 
+                self.logger.warning(f"LinUCB: Matrix A for arm {arm_key} is singular. Using identity fallback.")
+                A_inv = np.identity(self.context_dim) / self.lambda_reg # Avoid division by zero if lambda_reg is 0
+                if self.lambda_reg == 0: A_inv = np.identity(self.context_dim) * 1e6 # Large variance
             
             theta_hat = A_inv @ self.b[arm_key]
             exploitation_term = context_vector @ theta_hat
-            exploration_term = self.alpha * np.sqrt(context_vector.T @ A_inv @ context_vector)
+            
+            # Ensure exploration term calculation is robust
+            try:
+                exploration_radicand = context_vector.T @ A_inv @ context_vector
+                if exploration_radicand < 0: # Should not happen with PSD matrices A_inv if A is PSD
+                    self.logger.warning(f"LinUCB: Negative radicand {exploration_radicand:.3e} for exploration term in arm {arm_key}. Using 0.")
+                    exploration_radicand = 0.0
+                exploration_term = self.alpha * np.sqrt(exploration_radicand)
+            except Exception as e:
+                self.logger.error(f"LinUCB: Error calculating exploration term for arm {arm_key}: {e}. Setting to 0.")
+                exploration_term = 0.0
+
             current_ucb = exploitation_term + exploration_term
             ucb_scores_debug[arm_key] = current_ucb
 
@@ -110,11 +131,12 @@ class LinUCBContextualBandit: # Same as before
                 max_ucb = current_ucb
                 selected_arm_key = arm_key
         
-        self.logger.info(f"LinUCB: Selected Arm '{selected_arm_key}'. Scores: " +
-                         ", ".join([f"{k}:{v:.3f}" for k,v in sorted(ucb_scores_debug.items(), key=lambda item: item[1], reverse=True)]))
+        # Sort scores for logging to easily see the top ones
+        sorted_scores_str = ", ".join([f"{k}:{v:.3f}" for k,v in sorted(ucb_scores_debug.items(), key=lambda item: item[1], reverse=True)[:5]]) # Log top 5
+        self.logger.info(f"LinUCB: Selected Arm '{selected_arm_key}'. Top Scores: {sorted_scores_str}")
         return selected_arm_key
 
-    def update_arm(self, arm_key: str, context_vector: np.array, reward: float): # Same as before
+    def update_arm(self, arm_key: str, context_vector: np.array, reward: float):
         if arm_key not in self.A:
             self.logger.error(f"LinUCB: Attempted to update non-existent arm: {arm_key}")
             return
@@ -130,9 +152,9 @@ class LinUCBContextualBandit: # Same as before
         self.logger.info(f"LinUCB: Updated Arm '{arm_key}' with reward {reward:.3f}. "
                          f"Count: {self.arm_counts[arm_key]}, AvgReward: {avg_reward:.3f}")
 
-    def get_best_arm_empirically(self) -> Tuple[Optional[str], float]: # Same as before
+    def get_best_arm_empirically(self) -> Tuple[Optional[str], float]:
         best_arm = None; max_empirical_mean = -float('inf')
-        if not self.arm_keys: return None, -float('inf') # Handle empty case
+        if not self.arm_keys: return None, -float('inf')
 
         for arm_key in self.arm_keys:
             if self.arm_counts[arm_key] > 0:
@@ -142,7 +164,7 @@ class LinUCBContextualBandit: # Same as before
                     best_arm = arm_key
         return best_arm, max_empirical_mean
 
-class PowerManager(xAppBase): # Initialization mostly same, KPM part changes
+class PowerManager(xAppBase):
     MAX_VOLUME_COUNTER_KBITS = (2**32) - 1
 
     def __init__(self, config_path: str, http_server_port: int, rmr_port: int, kpm_ran_func_id: int = 2):
@@ -194,13 +216,20 @@ class PowerManager(xAppBase): # Initialization mostly same, KPM part changes
 
         self.gnb_ids_map = self.config.get('gnb_ids', {})
         self.gnb_id_to_du_name_map = {v: k for k, v in self.gnb_ids_map.items()}
-        # ... (CLOS association logic same) ...
+        
+        clos_association_config = self.config.get('clos_association', {})
+        self.clos_to_du_names_map: Dict[int, List[str]] = {}
+        ran_components_in_config = self.config.get('ran_cores', {}).keys()
+        for cid_key, comps_list in clos_association_config.items():
+            cid = int(cid_key)
+            if isinstance(comps_list, list): 
+                self.clos_to_du_names_map[cid] = [c for c in comps_list if c in ran_components_in_config and c.startswith('du')]
+            else: self._log(WARN, f"Components for CLOS {cid} ('{comps_list}') not a list. Skipping.")
+        
 
         self.kpm_data_lock = threading.Lock()
-        # This will now store SUMMED per-gNB data derived from Style 4
         self.accumulated_kpm_metrics: Dict[str, Dict[str, Any]] = {}
         self.current_interval_ue_ids: Set[str] = set()
-        # self.kpm_subscription_id_to_style_map: Dict[str, int] = {} # No longer needed if only one style
 
         cb_config = self.config.get('contextual_bandit', {})
         bandit_actions_w_str = cb_config.get('actions_tdp_delta_w', {"dec_10": -10.0, "dec_5": -5.0, "hold": 0.0, "inc_5": 5.0, "inc_10": 10.0})
@@ -223,33 +252,573 @@ class PowerManager(xAppBase): # Initialization mostly same, KPM part changes
         self.total_bits_from_previous_optimizer_interval: Optional[float] = None
         self.throughput_change_threshold_for_discard = float(cb_config.get('throughput_change_threshold_for_discard', 1.0))
 
-        self.norm_params = cb_config.get('normalization_parameters', {
-            'total_bits_per_second': {'min': 0.0, 'max': 50 * 1024 * 1024 * 8 }, # 50 Gbps
-            'num_ues': {'min': 0, 'max': 100.0},
-            'num_active_dus': {'min': 0, 'max': float(len(self.gnb_ids_map) or 1.0)},
-            'ru_cpu_usage': {'min': 80.0, 'max': 100.0},
-            'current_tdp': {'min': float(self.tdp_min_w), 'max': float(self.tdp_max_w)}
-        })
-        # Adjust max for total_bits_per_second based on interval if needed, or normalize per-second value
-        if 'total_bits_interval' in self.norm_params : # Legacy, prefer total_bits_per_second
-            self._log(WARN, "Config 'total_bits_interval' for normalization is deprecated, use 'total_bits_per_second'.")
-            if 'total_bits_per_second' not in self.norm_params:
-                 self.norm_params['total_bits_per_second'] = self.norm_params['total_bits_interval']
+        self.norm_params = cb_config.get('normalization_parameters', {}) # Loaded from config
+        # Ensure default TDP normalization params match actual TDP range if not specified
+        if 'current_tdp' not in self.norm_params:
+            self.norm_params['current_tdp'] = {'min': float(self.tdp_min_w), 'max': float(self.tdp_max_w)}
+        if 'num_active_dus' not in self.norm_params:
+             self.norm_params['num_active_dus'] =  {'min': 0, 'max': float(len(self.gnb_ids_map) or 1.0)}
 
 
         self.last_ru_pid_run_time: float = 0.0
         self.last_optimizer_run_time: float = 0.0
         self.last_stats_print_time: float = 0.0
         self.most_recent_calculated_efficiency_for_log: Optional[float] = None
-        self.current_num_ues_for_log: int = 0 # For stats printing
+        self.current_num_ues_for_log: int = 0
 
         self._validate_config()
         if self.dry_run: self._log(INFO, "!!!!!!!!!!!! DRY RUN MODE ENABLED !!!!!!!!!!!!")
 
+    def _normalize_feature(self, value: float, feature_key: str) -> float:
+        params = self.norm_params.get(feature_key)
+        if not params:
+            self._log(WARN, f"Normalization params not found for {feature_key}. Returning raw value: {value}")
+            return value
+        val_min = float(params.get('min', 0.0))
+        val_max = float(params.get('max', 1.0))
 
-    @xAppBase.start_function # Decorator from your xAppBase
-    def run_power_management_xapp(self): # Main loop structure mostly same
-        # ... (Initializations for TDP, MSR, Energy, SST are THE SAME as the LinUCB version) ...
+        if val_max == val_min: 
+            return 0.5 if value == val_min else (0.0 if value < val_min else 1.0)
+        
+        normalized = (value - val_min) / (val_max - val_min)
+        return max(0.0, min(1.0, normalized)) 
+
+    def _get_current_context_vector(self, current_total_bits_interval: float, current_num_ues: int,
+                                   current_num_active_dus: int, current_ru_cpu_avg: float,
+                                   current_actual_tdp: float) -> np.array:
+        
+        interval_s = self.optimizer_decision_interval_s
+        if interval_s <=0: interval_s = 1.0 
+
+        bits_per_second = current_total_bits_interval / interval_s if interval_s > 0 else 0.0
+
+        features = np.zeros(self.context_dimension)
+        current_feature_index = 0
+
+        def add_feature(value, key):
+            nonlocal current_feature_index
+            if current_feature_index < self.context_dimension:
+                features[current_feature_index] = self._normalize_feature(value, key)
+                current_feature_index += 1
+            else:
+                self._log(WARN, f"Context vector full, cannot add feature {key}. Dim: {self.context_dimension}")
+
+        # Order must be consistent and match definition (e.g., CTX_IDX constants if used)
+        add_feature(1.0, 'bias') # Bias term - normalization params for bias could be min:1, max:1
+        add_feature(bits_per_second, 'total_bits_per_second')
+        add_feature(float(current_num_ues), 'num_ues')
+        add_feature(float(current_num_active_dus), 'num_active_dus')
+        add_feature(current_ru_cpu_avg, 'ru_cpu_usage')
+        
+        # Only add TDP if context_dimension allows
+        if 'current_tdp' in self.norm_params and current_feature_index < self.context_dimension:
+             add_feature(current_actual_tdp, 'current_tdp')
+        
+        if current_feature_index != self.context_dimension:
+            self._log(ERROR, f"Context vector final length {current_feature_index} != configured dimension {self.context_dimension}!")
+            # Pad with 0.5 or handle error - this indicates a mismatch in feature definition vs. dimension
+            while current_feature_index < self.context_dimension:
+                features[current_feature_index] = 0.5 
+                current_feature_index +=1
+        return features
+
+    def _setup_logging(self):
+        self.logger = logging.getLogger("EcoRANPowerManager")
+        self.logger.handlers = [] 
+        self.logger.propagate = False
+        console_level = LOGGING_LEVEL_MAP.get(self.verbosity, logging.INFO)
+        file_level = LOGGING_LEVEL_MAP.get(self.file_verbosity_cfg, logging.DEBUG)
+        overall_logger_level = min(console_level, file_level) if not (self.verbosity == SILENT and self.file_verbosity_cfg == SILENT) else logging.CRITICAL + 10
+        self.logger.setLevel(overall_logger_level)
+
+        if self.verbosity > SILENT:
+            ch = logging.StreamHandler(sys.stdout)
+            ch.setLevel(console_level)
+            ch_formatter = logging.Formatter('%(asctime)s %(levelname).1s: %(message)s', datefmt='%H:%M:%S')
+            ch.setFormatter(ch_formatter)
+            self.logger.addHandler(ch)
+
+        if self.file_verbosity_cfg > SILENT and self.log_file_path_base:
+            try:
+                os.makedirs(self.log_file_path_base, exist_ok=True)
+                log_fn = f"ecoran_log_{time.strftime('%Y%m%d_%H%M%S')}.log"
+                log_fp = os.path.join(self.log_file_path_base, log_fn)
+                fh = logging.FileHandler(log_fp)
+                fh.setLevel(file_level)
+                fh_formatter = logging.Formatter('%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s - %(module)s:%(lineno)d: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+                fh.setFormatter(fh_formatter)
+                self.logger.addHandler(fh)
+                self.logger.info(f"File logging started: {log_fp} at level {logging.getLevelName(file_level)}")
+            except Exception as e:
+                print(f"{time.strftime('%H:%M:%S')} E: Failed to set up file logging to {self.log_file_path_base}: {e}")
+                if not any(isinstance(h, logging.StreamHandler) for h in self.logger.handlers) and self.verbosity > SILENT:
+                    ch_fallback = logging.StreamHandler(sys.stdout)
+                    ch_fallback.setLevel(console_level)
+                    ch_formatter_fallback = logging.Formatter('%(asctime)s %(levelname).1s: %(message)s', datefmt='%H:%M:%S')
+                    ch_fallback.setFormatter(ch_formatter_fallback)
+                    self.logger.addHandler(ch_fallback)
+                    self.logger.warning("File logging failed, using console fallback for logger.")
+
+
+    def _log(self, level_num: int, message: str):
+        if hasattr(self, 'logger') and self.logger.handlers: 
+            if level_num == ERROR: self.logger.error(message)
+            elif level_num == WARN: self.logger.warning(message)
+            elif level_num == INFO: self.logger.info(message)
+            elif level_num >= DEBUG_KPM: self.logger.debug(message)
+        elif level_num > SILENT : 
+            level_map_fallback = {ERROR: "E:", WARN: "W:", INFO: "INFO:", DEBUG_KPM: "DBG_KPM:", DEBUG_ALL: "DEBUG:"}
+            print(f"{time.strftime('%H:%M:%S')} {level_map_fallback.get(level_num, f'LVL{level_num}:')} {message}")
+
+    def _validate_config(self):
+        if not os.path.exists(self.rapl_base_path) or not os.path.exists(self.power_limit_uw_file):
+            self._log(ERROR, f"RAPL path {self.rapl_base_path} or power limit file missing. Exiting."); sys.exit(1)
+        if not os.path.exists(self.energy_uj_file): self._log(WARN, f"Energy file {self.energy_uj_file} not found.")
+        if not self.ru_timing_core_indices and self.config.get('ru_timing_cores'): self._log(WARN, "'ru_timing_cores' is defined but empty.")
+        elif not self.ru_timing_core_indices: self._log(INFO, "No 'ru_timing_cores' defined, RU Timing PID will be disabled.")
+        elif self.ru_timing_core_indices:
+            tc = self.ru_timing_core_indices[0]; mp = f'/dev/cpu/{tc}/msr'
+            if not os.path.exists(mp): self._log(ERROR, f"MSR file {mp} not found. Exiting."); sys.exit(1)
+            if read_msr_direct(tc,MSR_IA32_TSC) is None: self._log(ERROR, f"Failed MSR read on core {tc}. Exiting."); sys.exit(1)
+            self._log(INFO, "MSR access test passed.")
+        try: subprocess.run([self.intel_sst_path,"--version"],capture_output=True,check=True,text=True)
+        except Exception as e: self._log(ERROR, f"'{self.intel_sst_path}' failed: {e}. Exiting."); sys.exit(1)
+        if 'bias' not in self.norm_params: # Ensure bias normalization is present for context vector
+            self.norm_params['bias'] = {'min': 1.0, 'max': 1.0} # Bias is always 1, so normalized is 1 (or 0.5 if min=max=0)
+        self._log(INFO, "Configuration and system checks passed.")
+
+    def _load_config(self) -> Dict[str, Any]:
+        try:
+            with open(self.config_path, 'r') as f: return yaml.safe_load(f)
+        except FileNotFoundError: print(f"E: Config file '{self.config_path}' not found. Exiting."); sys.exit(1)
+        except yaml.YAMLError as e: print(f"E: Could not parse config file '{self.config_path}': {e}. Exiting."); sys.exit(1)
+
+    def _parse_core_list_string(self, core_str: str) -> List[int]:
+        cores: Set[int] = set();
+        if not core_str: return []
+        for part_raw in core_str.split(','):
+            part = part_raw.strip();
+            if not part: continue
+            if '-' in part:
+                try: s, e = map(int, part.split('-',1)); cores.update(range(s,e+1)) if s<=e else self._log(WARN, f"Invalid core range {s}-{e}.")
+                except ValueError: self._log(WARN, f"Invalid core range format '{part}'.")
+            else:
+                try: cores.add(int(part))
+                except ValueError: self._log(WARN, f"Invalid core number '{part}'.")
+        return sorted(list(cores))
+
+    def _update_ru_core_msr_data(self):
+        if not self.ru_timing_core_indices: return
+        for cid in self.ru_timing_core_indices:
+            mperf, tsc = read_msr_direct(cid, MSR_IA32_MPERF), read_msr_direct(cid, MSR_IA32_TSC)
+            busy = 0.0
+            if cid not in self.ru_core_msr_prev_data: self.ru_core_msr_prev_data[cid] = CoreMSRData(cid)
+            prev = self.ru_core_msr_prev_data[cid]
+            if all(x is not None for x in [prev.mperf, prev.tsc, mperf, tsc]):
+                dm, dt = mperf - prev.mperf, tsc - prev.tsc 
+                if dm < 0: dm += (2**64) 
+                if dt < 0: dt += (2**64)
+                busy = min(100.0, 100.0 * dm / dt) if dt > 0 else prev.busy_percent
+            else: busy = prev.busy_percent 
+            prev.mperf, prev.tsc, prev.busy_percent = mperf, tsc, busy
+
+    def _get_control_ru_timing_cpu_usage(self) -> float:
+        if not self.ru_timing_core_indices: return 0.0
+        max_b = 0.0; valid_sample_this_round = False
+        for cid in self.ru_timing_core_indices:
+            d = self.ru_core_msr_prev_data.get(cid)
+            if d and d.busy_percent is not None:
+                max_b = max(max_b, d.busy_percent)
+                valid_sample_this_round = True
+        
+        if not valid_sample_this_round and not self.max_ru_timing_usage_history: return 0.0 
+        elif not valid_sample_this_round and self.max_ru_timing_usage_history:
+            return sum(self.max_ru_timing_usage_history) / len(self.max_ru_timing_usage_history)
+
+        self.max_ru_timing_usage_history.append(max_b)
+        if len(self.max_ru_timing_usage_history) > self.max_samples_cpu_avg:
+            self.max_ru_timing_usage_history.pop(0)
+        
+        return sum(self.max_ru_timing_usage_history)/len(self.max_ru_timing_usage_history) if self.max_ru_timing_usage_history else 0.0
+
+    def _run_command(self, cmd_list: List[str]) -> None:
+        cmd_str_list = [self.intel_sst_path] + cmd_list[1:] if cmd_list[0] == "intel-speed-select" else cmd_list
+        printable_cmd = ' '.join(cmd_str_list)
+        if self.dry_run:
+            self._log(INFO, f"[DRY RUN] Would execute: {printable_cmd}")
+            return
+        
+        self._log(DEBUG_ALL, f"Executing: {printable_cmd}")
+        try:
+            process = subprocess.run(cmd_str_list, shell=False, check=True, capture_output=True, text=True, timeout=10)
+            if process.stdout: self._log(DEBUG_ALL, f"Cmd STDOUT: {process.stdout.strip()}")
+            if process.stderr: self._log(DEBUG_ALL, f"Cmd STDERR: {process.stderr.strip()}") 
+        except subprocess.CalledProcessError as e:
+            msg = f"Cmd '{e.cmd}' failed ({e.returncode}). STDOUT: {e.stdout.strip()} STDERR: {e.stderr.strip()}"
+            self._log(ERROR, msg)
+            raise RuntimeError(msg) 
+        except FileNotFoundError:
+            msg = f"Cmd '{cmd_str_list[0]}' not found. Ensure it's in PATH or config provides full path."
+            self._log(ERROR, msg)
+            raise RuntimeError(msg)
+        except subprocess.TimeoutExpired:
+            msg = f"Cmd '{printable_cmd}' timed out after 10s."
+            self._log(ERROR, msg)
+            raise RuntimeError(msg)
+
+    def _setup_intel_sst(self):
+        self._log(INFO, "--- Configuring Intel SST-CP ---")
+        try:
+            self._run_command(["intel-speed-select", "core-power", "enable"]) 
+            for cid_key, freq_mhz_str in self.config.get('clos_min_frequency', {}).items():
+                try:
+                    freq_val = str(freq_mhz_str) 
+                    self._run_command(["intel-speed-select", "core-power", "config", "-c", str(cid_key), "--min", freq_val])
+                    self._log(INFO, f"SST-CP: Set CLOS {cid_key} min frequency to {freq_val} MHz.")
+                except Exception as e_clos_freq:
+                    self._log(ERROR, f"SST-CP: Failed to set min freq for CLOS {cid_key} to {freq_mhz_str}: {e_clos_freq}")
+            
+            ran_cores = {name: self._parse_core_list_string(str(core_list_str))
+                         for name, core_list_str in self.config.get('ran_cores', {}).items()}
+
+            all_configured_cores = set() 
+            for cid_key, component_names_list in self.config.get('clos_association', {}).items():
+                clos_id = int(cid_key)
+                cores_for_this_clos = set()
+                if isinstance(component_names_list, list):
+                    for comp_name in component_names_list:
+                        cores_for_this_comp = ran_cores.get(comp_name, [])
+                        if not cores_for_this_comp:
+                            self._log(WARN, f"SST-CP: Component '{comp_name}' for CLOS {clos_id} has no cores defined in 'ran_cores'.")
+                        cores_for_this_clos.update(cores_for_this_comp)
+                else:
+                    self._log(WARN, f"SST-CP: Components for CLOS {clos_id} ('{component_names_list}') is not a list. Skipping.")
+                    continue
+
+                if clos_id == 0 and self.ru_timing_core_indices: 
+                    self._log(INFO, f"SST-CP: Ensuring RU_Timing cores {self.ru_timing_core_indices} are in CLOS 0.")
+                    cores_for_this_clos.update(self.ru_timing_core_indices)
+                
+                if cores_for_this_clos:
+                    core_list_str = ",".join(map(str, sorted(list(cores_for_this_clos))))
+                    self._run_command(["intel-speed-select", "-C", core_list_str, "core-power", "assoc", "-c", str(clos_id)])
+                    self._log(INFO, f"SST-CP: Associated cores [{core_list_str}] to CLOS {clos_id}.")
+                    all_configured_cores.update(cores_for_this_clos)
+                elif clos_id == 0 and self.ru_timing_core_indices and not component_names_list: 
+                     core_list_str = ",".join(map(str, sorted(list(self.ru_timing_core_indices))))
+                     self._run_command(["intel-speed-select", "-C", core_list_str, "core-power", "assoc", "-c", str(clos_id)])
+                     self._log(INFO, f"SST-CP: Associated RU_Timing cores [{core_list_str}] to CLOS {clos_id}.")
+                     all_configured_cores.update(self.ru_timing_core_indices)
+                else:
+                    self._log(WARN, f"SST-CP: No cores to associate with CLOS {clos_id} based on components '{component_names_list}'.")
+            self._log(INFO, "--- Intel SST-CP Configuration Complete ---")
+        except Exception as e:
+            self._log(ERROR, f"Intel SST-CP setup error: {e}")
+            if not self.dry_run:
+                raise RuntimeError(f"SST-CP Setup Failed: {e}")
+
+    def _read_current_tdp_limit_w(self) -> float:
+        if self.dry_run and hasattr(self, 'optimizer_target_tdp_w'): 
+            return self.optimizer_target_tdp_w 
+        try:
+            with open(self.power_limit_uw_file, 'r') as f:
+                return int(f.read().strip()) / 1e6
+        except Exception as e:
+            self._log(WARN, f"Could not read {self.power_limit_uw_file}, returning configured min_tdp ({self.tdp_min_w}W). Error: {e}")
+            return float(self.tdp_min_w)
+
+    def _set_tdp_limit_w(self, tdp_watts: float, context: str = ""):
+        clamped_tdp_uw = int(max(self.tdp_min_w * 1e6, min(tdp_watts * 1e6, self.tdp_max_w * 1e6)))
+        new_tdp_w = clamped_tdp_uw / 1e6
+        significant_change = abs(self.current_tdp_w - new_tdp_w) > 0.01
+
+        if self.dry_run:
+            if significant_change:
+                self._log(INFO, f"[DRY RUN] {context}. New Target TDP: {new_tdp_w:.1f}W (Previous: {self.current_tdp_w:.1f}W).")
+            self.current_tdp_w = new_tdp_w
+            return
+
+        try:
+            with open(self.power_limit_uw_file, 'r') as f_read:
+                current_hw_limit_uw = int(f_read.read().strip())
+            if current_hw_limit_uw == clamped_tdp_uw:
+                if significant_change: 
+                    self._log(INFO, f"{context}. Target TDP: {new_tdp_w:.1f}W (already set in HW, updating internal state).")
+                    self.current_tdp_w = new_tdp_w
+                return 
+        except Exception as e:
+            self._log(WARN, f"Could not read {self.power_limit_uw_file} before write: {e}. Proceeding with write.")
+
+        try:
+            self._log(INFO, f"{context}. Setting TDP to: {new_tdp_w:.1f}W (from {self.current_tdp_w:.1f}W).")
+            with open(self.power_limit_uw_file, 'w') as f_write:
+                f_write.write(str(clamped_tdp_uw))
+            self.current_tdp_w = new_tdp_w 
+        except OSError as e:
+            self._log(ERROR, f"OSError writing TDP to {self.power_limit_uw_file}: {e}")
+            raise RuntimeError(f"OSError setting TDP: {e}") 
+        except Exception as e:
+            self._log(ERROR, f"Exception writing TDP: {e}")
+            raise RuntimeError(f"Exception setting TDP: {e}")
+
+    def _run_ru_timing_pid_step(self, current_ru_cpu_usage: float):
+        if not self.ru_timing_core_indices: return 
+
+        error = self.target_ru_cpu_usage - current_ru_cpu_usage  
+        abs_error = abs(error)
+        sensitivity_threshold = self.target_ru_cpu_usage * self.tdp_adj_sensitivity_factor
+        
+        if abs_error > sensitivity_threshold:
+            step_size = self.tdp_adj_step_w_large if abs_error > (sensitivity_threshold * self.adaptive_step_far_thresh_factor) else self.tdp_adj_step_w_small
+            tdp_change_w = -step_size if error > 0 else step_size
+            new_target_tdp = self.current_tdp_w + tdp_change_w
+            ctx = (f"RU_PID: RU CPU {current_ru_cpu_usage:.2f}% (Target {self.target_ru_cpu_usage:.2f}%), "
+                   f"Error {error:.2f}%, TDP Change {tdp_change_w:.1f}W")
+            self._set_tdp_limit_w(new_target_tdp, context=ctx)
+
+    def _run_contextual_bandit_optimizer_step(self, current_efficiency_bits_per_uj: Optional[float],
+                                             current_context_vector: Optional[np.array],
+                                             significant_throughput_change: bool):
+        if self.last_selected_bandit_arm is not None and self.last_context_vector is not None:
+            if significant_throughput_change:
+                self._log(WARN, f"ContextualBandit: Skipping update for arm '{self.last_selected_bandit_arm}' due to significant throughput change.")
+            elif current_efficiency_bits_per_uj is not None and math.isfinite(current_efficiency_bits_per_uj):
+                self.contextual_bandit.update_arm(self.last_selected_bandit_arm, self.last_context_vector, current_efficiency_bits_per_uj)
+            else:
+                self._log(WARN, f"ContextualBandit: Invalid efficiency ({current_efficiency_bits_per_uj}) for arm '{self.last_selected_bandit_arm}'. Skipping update.")
+        
+        if current_context_vector is None:
+            self._log(WARN, "ContextualBandit: Current context vector is None. Cannot select arm. Holding TDP by choosing 'hold' arm.")
+            selected_arm_key = "hold" 
+            if "hold" not in self.bandit_actions:
+                 selected_arm_key = random.choice(list(self.bandit_actions.keys()))
+        else:
+            selected_arm_key = self.contextual_bandit.select_arm(current_context_vector)
+        
+        self.last_selected_bandit_arm = selected_arm_key
+        self.last_context_vector = current_context_vector 
+
+        tdp_delta_w = self.bandit_actions.get(selected_arm_key, 0.0) 
+
+        base_tdp_for_bandit_decision = self.optimizer_target_tdp_w
+        proposed_next_tdp_by_bandit = base_tdp_for_bandit_decision + tdp_delta_w
+        
+        self._log(INFO, f"ContextualBandit: Arm='{selected_arm_key}', Delta={tdp_delta_w:.1f}W. "
+                        f"Base TDP: {base_tdp_for_bandit_decision:.1f}W. "
+                        f"Proposed TDP: {proposed_next_tdp_by_bandit:.1f}W.")
+        if current_context_vector is not None:
+             self._log(DEBUG_ALL, f"ContextualBandit: Context for decision: {['{:.2f}'.format(x) for x in current_context_vector]}")
+
+        self._set_tdp_limit_w(proposed_next_tdp_by_bandit, context=f"Optimizer CB (Arm: {selected_arm_key})")
+        self.optimizer_target_tdp_w = self._read_current_tdp_limit_w()
+
+
+    def _get_pkg_power_w(self) -> Tuple[float, bool]:
+        if not os.path.exists(self.energy_uj_file): return 0.0, False
+        try:
+            with open(self.energy_uj_file, 'r') as f: current_e_uj = int(f.read().strip())
+            now = time.monotonic(); pwr_w, ok = 0.0, False
+            if self.last_pkg_energy_uj is not None and self.last_energy_read_time is not None:
+                dt = now - self.last_energy_read_time
+                if dt > 0.001: 
+                    de = current_e_uj - self.last_pkg_energy_uj
+                    if de < 0: 
+                        max_r = self.max_energy_val_rapl
+                        try:
+                            with open(os.path.join(self.rapl_base_path, "max_energy_range_uj"),'r') as f_max_r:
+                                max_r_val = int(f_max_r.read().strip());
+                                if max_r_val > 0: max_r = max_r_val
+                        except Exception: pass 
+                        de += max_r
+                    pwr_w = (de / 1e6) / dt 
+                    if 0 <= pwr_w < 5000: 
+                        ok = True
+                    else:
+                        self._log(DEBUG_ALL, f"Unrealistic PkgPwr calculated: {pwr_w:.1f}W (dE={de}, dt={dt:.3f}s). Resetting baseline.")
+                        ok=False; pwr_w=0.0
+                        self.last_pkg_energy_uj, self.last_energy_read_time = current_e_uj, now
+                        return pwr_w, ok 
+            
+            if ok or self.last_pkg_energy_uj is None:
+                 self.last_pkg_energy_uj, self.last_energy_read_time = current_e_uj, now
+            return pwr_w, ok
+        except Exception as e:
+            self._log(WARN, f"Exception in _get_pkg_power_w: {e}");
+            return 0.0, False
+
+    def _read_current_energy_uj(self) -> Optional[int]:
+        if not os.path.exists(self.energy_uj_file): return None
+        try:
+            with open(self.energy_uj_file, 'r') as f: return int(f.read().strip())
+        except Exception as e: self._log(WARN, f"Could not read {self.energy_uj_file}: {e}"); return None
+
+    def _get_interval_energy_uj_for_optimizer(self) -> Optional[float]:
+        current_e_uj = self._read_current_energy_uj()
+        if current_e_uj is None: return None
+
+        if self.energy_at_last_optimizer_interval_uj is None: 
+            self.energy_at_last_optimizer_interval_uj = current_e_uj
+            return None 
+
+        delta_e = float(current_e_uj - self.energy_at_last_optimizer_interval_uj)
+
+        if delta_e < 0: 
+            max_r = self.max_energy_val_rapl
+            try:
+                with open(os.path.join(self.rapl_base_path,"max_energy_range_uj"),'r') as f_max_r:
+                    max_r_val = int(f_max_r.read().strip());
+                    if max_r_val > 0: max_r = max_r_val
+            except Exception as e: self._log(WARN, f"Could not read max_energy_range_uj: {e}"); pass
+            delta_e += max_r
+        
+        self.energy_at_last_optimizer_interval_uj = current_e_uj 
+        return delta_e
+
+    def _kpm_indication_callback(self, e2_agent_id: str, subscription_id: str,
+                                 indication_hdr_bytes: bytes, indication_msg_bytes: bytes):
+        self._log(DEBUG_KPM, f"KPM CB: Agent:{e2_agent_id}, Sub(E2EventInstanceID):{subscription_id}, Time:{time.monotonic():.3f}")
+        if not self.e2sm_kpm: self._log(WARN, f"KPM from {e2_agent_id}, but e2sm_kpm unavailable."); return
+
+        try:
+            kpm_hdr_info = self.e2sm_kpm.extract_hdr_info(indication_hdr_bytes)
+            kpm_meas_data = self.e2sm_kpm.extract_meas_data(indication_msg_bytes)
+
+            if not kpm_meas_data: 
+                self._log(WARN, f"KPM CB Style 4: Failed to extract KPM data from {e2_agent_id}. HDR: {kpm_hdr_info}"); return
+            
+            ue_meas_data_map = kpm_meas_data.get("ueMeasData", {})
+            if not isinstance(ue_meas_data_map, dict):
+                self._log(WARN, f"KPM CB Style 4: Invalid 'ueMeasData' format from {e2_agent_id}. Data: {kpm_meas_data}")
+                return
+            
+            gNB_total_dl_bits_this_report = 0.0
+            gNB_total_ul_bits_this_report = 0.0
+            ues_in_this_report_for_this_gnb = set()
+
+            for ue_id_str, per_ue_measurements in ue_meas_data_map.items():
+                global_ue_id = f"{e2_agent_id}_{ue_id_str}" 
+                ues_in_this_report_for_this_gnb.add(global_ue_id)
+
+                ue_metrics = per_ue_measurements.get("measData", {})
+                if not isinstance(ue_metrics, dict):
+                    self._log(WARN, f"KPM CB Style 4: Invalid 'measData' for UE {global_ue_id} from {e2_agent_id}.")
+                    continue
+                
+                for metric_name, value_list in ue_metrics.items():
+                    if isinstance(value_list, list) and value_list:
+                        value = sum(value_list) 
+                        try:
+                            if metric_name == 'DRB.RlcSduTransmittedVolumeDL':
+                                gNB_total_dl_bits_this_report += float(value) * 1000.0
+                            elif metric_name == 'DRB.RlcSduTransmittedVolumeUL':
+                                gNB_total_ul_bits_this_report += float(value) * 1000.0
+                        except (ValueError, TypeError):
+                             self._log(WARN, f"KPM CB Style 4: Metric '{metric_name}' for UE {global_ue_id} value '{value_list}' invalid.")
+            
+            with self.kpm_data_lock:
+                if e2_agent_id not in self.accumulated_kpm_metrics:
+                    self.accumulated_kpm_metrics[e2_agent_id] = {'bits_sum_dl':0.0, 'bits_sum_ul':0.0, 'num_reports':0}
+                acc_data = self.accumulated_kpm_metrics[e2_agent_id]
+                acc_data['bits_sum_dl'] += gNB_total_dl_bits_this_report
+                acc_data['bits_sum_ul'] += gNB_total_ul_bits_this_report
+                acc_data['num_reports'] += 1
+                
+                self.current_interval_ue_ids.update(ues_in_this_report_for_this_gnb)
+                
+                self._log(DEBUG_KPM, f"KPM CB Style 4: {e2_agent_id}: Added DL_b={gNB_total_dl_bits_this_report:.0f}, UL_b={gNB_total_ul_bits_this_report:.0f}. "
+                                     f"Reported {len(ues_in_this_report_for_this_gnb)} UEs. Total unique UEs for interval so far: {len(self.current_interval_ue_ids)}")
+
+        except Exception as e: self._log(ERROR, f"Error processing KPM Style 4 indication from {e2_agent_id}: {e}"); import traceback; traceback.print_exc()
+
+
+    def _get_and_reset_accumulated_kpm_metrics(self) -> Dict[str, Dict[str, Any]]:
+        with self.kpm_data_lock:
+            snap = {}
+            for gnb_id, data in self.accumulated_kpm_metrics.items():
+                snap[gnb_id] = {
+                    'dl_bits': data.get('bits_sum_dl', 0.0),
+                    'ul_bits': data.get('bits_sum_ul', 0.0),
+                    'reports_in_interval': data.get('num_reports', 0)
+                }
+                data['bits_sum_dl'] = 0.0
+                data['bits_sum_ul'] = 0.0
+                data['num_reports'] = 0
+        return snap
+
+    def _get_and_reset_current_ue_count(self) -> int:
+        with self.kpm_data_lock:
+            count = len(self.current_interval_ue_ids)
+            self.current_interval_ue_ids.clear() 
+        return count
+
+    def _setup_kpm_subscriptions(self):
+        self._log(INFO, "--- Setting up KPM Style 4 Subscriptions (Per-UE Metrics) ---")
+        if not self.e2sm_kpm: self._log(WARN, "e2sm_kpm module unavailable. Cannot subscribe."); return
+        
+        nodes = list(self.gnb_ids_map.values()) 
+        if not nodes: self._log(WARN, "No gNB IDs configured for KPM subscriptions."); return
+
+        kpm_config = self.config.get('kpm_subscriptions', {})
+        
+        style4_metrics = kpm_config.get('style4_metrics_per_ue', ['DRB.RlcSduTransmittedVolumeDL', 'DRB.RlcSduTransmittedVolumeUL'])
+        style4_report_p_ms = int(kpm_config.get('style4_report_period_ms', 1000))
+        style4_gran_p_ms = int(kpm_config.get('style4_granularity_period_ms', style4_report_p_ms))
+        default_match_all_cond = [{'testCondInfo': {'testType': {'ul-rSRP': 'true'}, 'testExpr': 'lessthan', 'testValue': {'valueInt': 10000}}}]
+        matching_ue_conds_config = kpm_config.get('style4_matching_ue_conditions', default_match_all_cond)
+            
+        self._log(INFO, f"KPM Style 4: MetricsPerUE: {style4_metrics}, ReportPeriod={style4_report_p_ms}ms, Granularity={style4_gran_p_ms}ms, Conditions: {matching_ue_conds_config}")
+        
+        successes = 0
+        for node_id_str in nodes:
+            if self.dry_run:
+                self._log(INFO, f"[DRY RUN] KPM Style 4 Sub: Node {node_id_str}")
+                successes+=1; continue
+            try:
+                self._log(INFO, f"Subscribing KPM Style 4: Node {node_id_str}")
+                self.e2sm_kpm.subscribe_report_service_style_4(
+                    e2_node_id=node_id_str, 
+                    report_interval_ms=style4_report_p_ms, 
+                    matching_ue_conds=matching_ue_conds_config, 
+                    meas_names_per_ue=style4_metrics, 
+                    granularity_period_ms=style4_gran_p_ms, 
+                    callback=self._kpm_indication_callback
+                )
+                with self.kpm_data_lock:
+                    if node_id_str not in self.accumulated_kpm_metrics:
+                        self.accumulated_kpm_metrics[node_id_str] = {'bits_sum_dl':0.0, 'bits_sum_ul':0.0, 'num_reports':0}
+                successes += 1
+            except Exception as e: self._log(ERROR, f"KPM Style 4 subscription failed for {node_id_str}: {e}"); import traceback; traceback.print_exc()
+        
+        if successes > 0: self._log(INFO, f"--- KPM Style 4 Subscriptions: {successes} successful attempts for {len(nodes)} nodes. ---")
+        elif nodes: self._log(WARN, "No KPM Style 4 subscriptions successfully initiated.")
+        else: self._log(INFO, "--- No KPM nodes to subscribe to. ---")
+
+    def _subscription_response_callback(self, name, path, data, ctype):
+        # This method is inherited from xAppBase and called by its HTTP server
+        # when the Subscription Manager sends a response to our subscription request.
+        # The xAppBase.py provided earlier handles storing the mapping from RIC Subscription ID
+        # to the E2EventInstanceID (which is used in RMR headers).
+        # We just log it here for visibility.
+        try:
+            parsed_data = json.loads(data)
+            subscription_id_ric = parsed_data.get('SubscriptionId') 
+            subscription_instances = parsed_data.get('SubscriptionInstances', [])
+            if subscription_instances:
+                e2_event_instance_id = subscription_instances[0].get("E2EventInstanceId")
+                self._log(INFO,f"Subscription Response CB: RIC_SubID={subscription_id_ric} maps to E2EventInstanceID={e2_event_instance_id}")
+            else:
+                self._log(WARN, f"Subscription Response CB: No SubscriptionInstances found for RIC_SubID={subscription_id_ric}. Data: {data}")
+
+        except Exception as e:
+            self._log(ERROR, f"Error in _subscription_response_callback processing data '{data}': {e}")
+        
+        # Create and return the HTTP response object expected by xAppBase
+        response_payload_str = "{}" # Empty JSON object as payload
+        return {'response': 'OK', 'status': 200, 'payload': response_payload_str, 'ctype': 'application/json', 'attachment': None, 'mode': 'plain'}
+
+
+    @xAppBase.start_function
+    def run_power_management_xapp(self):
         if os.geteuid() != 0 and not self.dry_run:
             self._log(ERROR, "Must be root for live run. Exiting."); sys.exit(1)
         
@@ -267,24 +836,27 @@ class PowerManager(xAppBase): # Initialization mostly same, KPM part changes
             if self.energy_at_last_optimizer_interval_uj is None and not self.dry_run: self._log(WARN, "Could not get initial package energy for optimizer.")
             
             self._setup_intel_sst()
-            self._setup_kpm_subscriptions() # This will now attempt Style 4
+            self._setup_kpm_subscriptions() 
 
             now = time.monotonic()
             self.last_ru_pid_run_time = now
             self.last_optimizer_run_time = now 
             self.last_stats_print_time = now
-            # Initialize previous bits for change detection
             self.total_bits_from_previous_optimizer_interval = 0.0
-
 
             self._log(INFO, f"\n--- Starting Monitoring & Control Loop ({'DRY RUN' if self.dry_run else 'LIVE RUN'}) ---")
             self._log(INFO, f"RU PID Interval: {self.ru_timing_pid_interval_s}s | Target RU CPU: {self.target_ru_cpu_usage if self.ru_timing_core_indices else 'N/A'}%")
             self._log(INFO, f"Contextual Bandit Optimizer Interval: {self.optimizer_decision_interval_s}s | TDP Range: {self.tdp_min_w}W-{self.tdp_max_w}W")
             self._log(INFO, f"Contextual Bandit Actions (TDP Delta W): {self.bandit_actions}, Alpha: {self.linucb_alpha}, Lambda: {self.linucb_lambda_reg}")
-            self._log(INFO, f"Context Dimension: {self.context_dimension}. Normalization Params (sample for total_bits_per_second): {self.norm_params.get('total_bits_per_second', 'N/A')}")
+            norm_param_sample_key = 'total_bits_per_second' # Key to show a sample normalization param
+            norm_param_sample_val = self.norm_params.get(norm_param_sample_key, 'N/A')
+            if isinstance(norm_param_sample_val, dict): # Make it more readable
+                norm_param_sample_val = f"min:{norm_param_sample_val.get('min')},max:{norm_param_sample_val.get('max')}"
+
+            self._log(INFO, f"Context Dimension: {self.context_dimension}. Norm Param Sample ({norm_param_sample_key}): {norm_param_sample_val}")
             self._log(INFO, f"Stats Print Interval: {self.stats_print_interval_s}s")
 
-            while self.running: # Check self.running flag from xAppBase
+            while self.running: 
                 loop_start_time = time.monotonic()
 
                 if self.ru_timing_core_indices: self._update_ru_core_msr_data()
@@ -296,32 +868,29 @@ class PowerManager(xAppBase): # Initialization mostly same, KPM part changes
                 
                 if loop_start_time - self.last_optimizer_run_time >= self.optimizer_decision_interval_s:
                     interval_energy_uj = self._get_interval_energy_uj_for_optimizer()
-                    # Get SUMMED data from Style 4 reports
                     kpm_data_for_totals = self._get_and_reset_accumulated_kpm_metrics()
                     current_num_ues = self._get_and_reset_current_ue_count() 
-                    self.current_num_ues_for_log = current_num_ues # For stats log
+                    self.current_num_ues_for_log = current_num_ues
 
                     total_bits_optimizer_interval = sum(
                         d.get('dl_bits', 0.0) + d.get('ul_bits', 0.0)
                         for d in kpm_data_for_totals.values()
                     )
                     num_kpm_reports_processed = sum(d.get('reports_in_interval',0) for d in kpm_data_for_totals.values())
-                    num_active_dus = sum(1 for d in kpm_data_for_totals.values() if d.get('dl_bits',0) + d.get('ul_bits',0) > 0)
+                    num_active_dus = sum(1 for d in kpm_data_for_totals.values() if d.get('dl_bits',0) + d.get('ul_bits',0) > 1e-6) # Active if some bits transferred
 
                     significant_throughput_change = False
-                    if self.total_bits_from_previous_optimizer_interval is not None: # Check if it's not the very first run
-                        # Avoid division by zero if previous bits was very small or zero.
-                        # Use a small epsilon or check if self.total_bits_from_previous_optimizer_interval is substantial.
+                    if self.total_bits_from_previous_optimizer_interval is not None: 
                         denominator = self.total_bits_from_previous_optimizer_interval
-                        if denominator < 1e-6: # If previous bits was effectively zero
-                            if total_bits_optimizer_interval > 1e6 : # And current bits is substantial
-                                significant_throughput_change = True # Consider it a significant ramp-up
+                        if denominator < 1e-6: 
+                            if total_bits_optimizer_interval > 1e6 : 
+                                significant_throughput_change = True 
+                                self._log(INFO, "Optimizer: Throughput ramped up significantly from near zero.")
                         elif abs(total_bits_optimizer_interval - denominator) / denominator > self.throughput_change_threshold_for_discard:
                             relative_change = abs(total_bits_optimizer_interval - denominator) / denominator
                             self._log(WARN, f"Optimizer: Significant throughput change detected ({relative_change*100:.1f}%). Update for arm {self.last_selected_bandit_arm} might be skipped.")
                             significant_throughput_change = True
                     self.total_bits_from_previous_optimizer_interval = total_bits_optimizer_interval
-
 
                     current_efficiency_for_bandit: Optional[float] = None
                     if num_kpm_reports_processed > 0 : 
@@ -367,669 +936,36 @@ class PowerManager(xAppBase): # Initialization mostly same, KPM part changes
                 sleep_time = max(0, self.main_loop_sleep_s - loop_duration)
                 if sleep_time > 0 : time.sleep(sleep_time)
 
-        # ... (except KeyboardInterrupt, SystemExit, etc. are THE SAME as LinUCB version) ...
         except KeyboardInterrupt: self._log(INFO, "\nLoop interrupted (KeyboardInterrupt).")
         except SystemExit as e: self._log(INFO, f"Application exiting (SystemExit: {e})."); raise 
         except RuntimeError as e: self._log(ERROR, f"Critical runtime error in loop: {e}."); raise 
         except Exception as e: self._log(ERROR, f"\nUnexpected error in loop: {e}"); import traceback; self._log(ERROR, traceback.format_exc()); raise 
-        finally: self._log(INFO, "--- Power Manager xApp run_power_management_xApp finished. ---")
-
-    
-    def _normalize_feature(self, value: float, feature_key: str) -> float: # Same as before
-        params = self.norm_params.get(feature_key)
-        if not params:
-            self._log(WARN, f"Normalization params not found for {feature_key}. Returning raw value: {value}")
-            return value # Or raise error
-        val_min, val_max = params['min'], params['max']
-        if val_max == val_min: 
-            return 0.5 if value == val_min else (0.0 if value < val_min else 1.0)
-        
-        normalized = (value - val_min) / (val_max - val_min)
-        return max(0.0, min(1.0, normalized)) 
-
-    def _get_current_context_vector(self, current_total_bits_interval: float, current_num_ues: int,
-                                   current_num_active_dus: int, current_ru_cpu_avg: float,
-                                   current_actual_tdp: float) -> np.array: # Modified to use bits_per_second
-        
-        interval_s = self.optimizer_decision_interval_s
-        if interval_s <=0: interval_s = 1.0 # fallback to avoid division by zero
-
-        bits_per_second = current_total_bits_interval / interval_s if interval_s > 0 else 0.0
-
-        features = np.zeros(self.context_dimension)
-        # Ensure order matches CONTEXT_DIMENSION and CTX_IDX constants if used
-        idx = 0
-        features[idx] = 1.0; idx+=1 # Bias term (CTX_IDX_BIAS)
-        features[idx] = self._normalize_feature(bits_per_second, 'total_bits_per_second'); idx+=1
-        features[idx] = self._normalize_feature(float(current_num_ues), 'num_ues'); idx+=1
-        features[idx] = self._normalize_feature(float(current_num_active_dus), 'num_active_dus'); idx+=1
-        features[idx] = self._normalize_feature(current_ru_cpu_avg, 'ru_cpu_usage'); idx+=1
-        if self.context_dimension > idx: # Only if current_tdp is a feature
-            features[idx] = self._normalize_feature(current_actual_tdp, 'current_tdp'); idx+=1
-        
-        if idx != self.context_dimension:
-            self._log(ERROR, f"Context vector length {idx} does not match configured dimension {self.context_dimension}!")
-            # Handle error: return None or raise exception
-            return np.ones(self.context_dimension) * 0.5 # Fallback to mid-values
-
-        return features
-
-    def _setup_logging(self):
-        self.logger = logging.getLogger("EcoRANPowerManager")
-        self.logger.handlers = [] # Clear existing handlers if any (e.g. during re-init)
-        self.logger.propagate = False
-        console_level = LOGGING_LEVEL_MAP.get(self.verbosity, logging.INFO)
-        file_level = LOGGING_LEVEL_MAP.get(self.file_verbosity_cfg, logging.DEBUG)
-        overall_logger_level = min(console_level, file_level) if not (self.verbosity == SILENT and self.file_verbosity_cfg == SILENT) else logging.CRITICAL + 10
-        self.logger.setLevel(overall_logger_level)
-
-        if self.verbosity > SILENT:
-            ch = logging.StreamHandler(sys.stdout)
-            ch.setLevel(console_level)
-            ch_formatter = logging.Formatter('%(asctime)s %(levelname).1s: %(message)s', datefmt='%H:%M:%S')
-            ch.setFormatter(ch_formatter)
-            self.logger.addHandler(ch)
-
-        if self.file_verbosity_cfg > SILENT and self.log_file_path_base:
-            try:
-                os.makedirs(self.log_file_path_base, exist_ok=True)
-                log_fn = f"ecoran_log_{time.strftime('%Y%m%d_%H%M%S')}.log"
-                log_fp = os.path.join(self.log_file_path_base, log_fn)
-                # Use RotatingFileHandler if logs can get very large
-                # fh = RotatingFileHandler(log_fp, maxBytes=20*1024*1024, backupCount=5)
-                fh = logging.FileHandler(log_fp)
-                fh.setLevel(file_level)
-                fh_formatter = logging.Formatter('%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s - %(module)s:%(lineno)d: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-                fh.setFormatter(fh_formatter)
-                self.logger.addHandler(fh)
-                # self._log(INFO, f"File logging started: {log_fp} at level {logging.getLevelName(file_level)}") # Causes recursion if logger not fully set
-                self.logger.info(f"File logging started: {log_fp} at level {logging.getLevelName(file_level)}")
-
-            except Exception as e:
-                print(f"{time.strftime('%H:%M:%S')} E: Failed to set up file logging to {self.log_file_path_base}: {e}")
-                # Fallback to console if file logging fails but console is enabled
-                if not any(isinstance(h, logging.StreamHandler) for h in self.logger.handlers) and self.verbosity > SILENT:
-                    ch_fallback = logging.StreamHandler(sys.stdout)
-                    ch_fallback.setLevel(console_level)
-                    ch_formatter_fallback = logging.Formatter('%(asctime)s %(levelname).1s: %(message)s', datefmt='%H:%M:%S')
-                    ch_fallback.setFormatter(ch_formatter_fallback)
-                    self.logger.addHandler(ch_fallback)
-                    self.logger.warning("File logging failed, using console fallback for logger.")
+        finally: self._log(INFO, "--- Power Manager xApp run_power_management_xapp finished. ---")
 
 
-    def _log(self, level_num: int, message: str):
-        if hasattr(self, 'logger') and self.logger.handlers: # Check if handlers are present
-            if level_num == ERROR: self.logger.error(message)
-            elif level_num == WARN: self.logger.warning(message)
-            elif level_num == INFO: self.logger.info(message)
-            elif level_num >= DEBUG_KPM: self.logger.debug(message)
-        elif level_num > SILENT : # Fallback if logger not fully initialized or no handlers
-            level_map_fallback = {ERROR: "E:", WARN: "W:", INFO: "INFO:", DEBUG_KPM: "DBG_KPM:", DEBUG_ALL: "DEBUG:"}
-            print(f"{time.strftime('%H:%M:%S')} {level_map_fallback.get(level_num, f'LVL{level_num}:')} {message}")
-
-    def _validate_config(self):
-        if not os.path.exists(self.rapl_base_path) or not os.path.exists(self.power_limit_uw_file):
-            print(f"E: RAPL path {self.rapl_base_path} or power limit file missing. Exiting."); sys.exit(1)
-        if not os.path.exists(self.energy_uj_file): self._log(WARN, f"Energy file {self.energy_uj_file} not found.")
-        if not self.ru_timing_core_indices and self.config.get('ru_timing_cores'): self._log(WARN, "'ru_timing_cores' is defined but empty.")
-        elif not self.ru_timing_core_indices: self._log(INFO, "No 'ru_timing_cores' defined, RU Timing PID will be disabled.")
-        elif self.ru_timing_core_indices:
-            tc = self.ru_timing_core_indices[0]; mp = f'/dev/cpu/{tc}/msr'
-            if not os.path.exists(mp): print(f"E: MSR file {mp} not found. Exiting."); sys.exit(1)
-            if read_msr_direct(tc,MSR_IA32_TSC) is None: print(f"E: Failed MSR read on core {tc}. Exiting."); sys.exit(1)
-            self._log(INFO, "MSR access test passed.")
-        try: subprocess.run([self.intel_sst_path,"--version"],capture_output=True,check=True,text=True)
-        except Exception as e: print(f"E: '{self.intel_sst_path}' failed: {e}. Exiting."); sys.exit(1)
-        self._log(INFO, "Configuration and system checks passed.")
-
-    def _load_config(self) -> Dict[str, Any]:
-        try:
-            with open(self.config_path, 'r') as f: return yaml.safe_load(f)
-        except FileNotFoundError: print(f"E: Config file '{self.config_path}' not found. Exiting."); sys.exit(1)
-        except yaml.YAMLError as e: print(f"E: Could not parse config file '{self.config_path}': {e}. Exiting."); sys.exit(1)
-
-    def _parse_core_list_string(self, core_str: str) -> List[int]:
-        cores: Set[int] = set();
-        if not core_str: return []
-        for part_raw in core_str.split(','):
-            part = part_raw.strip();
-            if not part: continue
-            if '-' in part:
-                try: s, e = map(int, part.split('-',1)); cores.update(range(s,e+1)) if s<=e else self._log(WARN, f"Invalid core range {s}-{e}.")
-                except ValueError: self._log(WARN, f"Invalid core range format '{part}'.")
-            else:
-                try: cores.add(int(part))
-                except ValueError: self._log(WARN, f"Invalid core number '{part}'.")
-        return sorted(list(cores))
-
-    def _update_ru_core_msr_data(self):
-        if not self.ru_timing_core_indices: return
-        for cid in self.ru_timing_core_indices:
-            mperf, tsc = read_msr_direct(cid, MSR_IA32_MPERF), read_msr_direct(cid, MSR_IA32_TSC)
-            busy = 0.0
-            if cid not in self.ru_core_msr_prev_data: self.ru_core_msr_prev_data[cid] = CoreMSRData(cid)
-            prev = self.ru_core_msr_prev_data[cid]
-            if all(x is not None for x in [prev.mperf, prev.tsc, mperf, tsc]):
-                dm, dt = mperf - prev.mperf, tsc - prev.tsc # type: ignore
-                if dm < 0: dm += (2**64) # MPERF and TSC are 64-bit counters
-                if dt < 0: dt += (2**64)
-                busy = min(100.0, 100.0 * dm / dt) if dt > 0 else prev.busy_percent
-            else: busy = prev.busy_percent # Use previous if current read fails
-            prev.mperf, prev.tsc, prev.busy_percent = mperf, tsc, busy
-
-    def _get_control_ru_timing_cpu_usage(self) -> float:
-        if not self.ru_timing_core_indices: return 0.0
-        max_b = 0.0; valid_sample_this_round = False
-        for cid in self.ru_timing_core_indices:
-            d = self.ru_core_msr_prev_data.get(cid)
-            if d and d.busy_percent is not None: # d.busy_percent could be 0.0
-                max_b = max(max_b, d.busy_percent)
-                valid_sample_this_round = True
-        
-        if not valid_sample_this_round and not self.max_ru_timing_usage_history:
-            return 0.0 # No valid data at all
-        elif not valid_sample_this_round and self.max_ru_timing_usage_history:
-            # If current sample is invalid, use the last valid average to avoid erratic PID behavior
-            return sum(self.max_ru_timing_usage_history) / len(self.max_ru_timing_usage_history)
-
-        self.max_ru_timing_usage_history.append(max_b)
-        if len(self.max_ru_timing_usage_history) > self.max_samples_cpu_avg:
-            self.max_ru_timing_usage_history.pop(0)
-        
-        return sum(self.max_ru_timing_usage_history)/len(self.max_ru_timing_usage_history) if self.max_ru_timing_usage_history else 0.0
-
-
-    def _run_command(self, cmd_list: List[str]) -> None:
-        cmd_str_list = [self.intel_sst_path] + cmd_list[1:] if cmd_list[0] == "intel-speed-select" else cmd_list
-        printable_cmd = ' '.join(cmd_str_list)
-        if self.dry_run:
-            self._log(INFO, f"[DRY RUN] Would execute: {printable_cmd}")
-            return
-        
-        self._log(DEBUG_ALL, f"Executing: {printable_cmd}")
-        try:
-            # Using shell=False is safer, ensure intel-speed-select is in PATH or provide full path
-            process = subprocess.run(cmd_str_list, shell=False, check=True, capture_output=True, text=True, timeout=10) # Added timeout
-            if process.stdout: self._log(DEBUG_ALL, f"Cmd STDOUT: {process.stdout.strip()}")
-            if process.stderr: self._log(DEBUG_ALL, f"Cmd STDERR: {process.stderr.strip()}") # SST often prints info to stderr
-        except subprocess.CalledProcessError as e:
-            msg = f"Cmd '{e.cmd}' failed ({e.returncode}). STDOUT: {e.stdout.strip()} STDERR: {e.stderr.strip()}"
-            self._log(ERROR, msg)
-            raise RuntimeError(msg) # Re-raise for critical setup
-        except FileNotFoundError:
-            msg = f"Cmd '{cmd_str_list[0]}' not found. Ensure it's in PATH or config provides full path."
-            self._log(ERROR, msg)
-            raise RuntimeError(msg)
-        except subprocess.TimeoutExpired:
-            msg = f"Cmd '{printable_cmd}' timed out after 10s."
-            self._log(ERROR, msg)
-            raise RuntimeError(msg)
-
-
-    def _setup_intel_sst(self):
-        self._log(INFO, "--- Configuring Intel SST-CP ---")
-        try:
-            self._run_command(["intel-speed-select", "core-power", "enable"]) # Global enable
-            # Configure CLOS min frequencies
-            for cid_key, freq_mhz_str in self.config.get('clos_min_frequency', {}).items():
-                try:
-                    # intel-speed-select expects frequency in MHz or a factor (e.g., 0.8 for 800MHz if base is 1GHz)
-                    # Check documentation for your specific intel-speed-select version
-                    # Assuming freq_mhz_str is like "2200" for 2.2GHz
-                    freq_val = str(freq_mhz_str) # Keep as string, SST tool parses it
-                    self._run_command(["intel-speed-select", "core-power", "config", "-c", str(cid_key), "--min", freq_val])
-                    self._log(INFO, f"SST-CP: Set CLOS {cid_key} min frequency to {freq_val} MHz.")
-                except Exception as e_clos_freq:
-                    self._log(ERROR, f"SST-CP: Failed to set min freq for CLOS {cid_key} to {freq_mhz_str}: {e_clos_freq}")
-            
-            # Associate cores to CLOS
-            ran_cores = {name: self._parse_core_list_string(str(core_list_str))
-                         for name, core_list_str in self.config.get('ran_cores', {}).items()}
-
-            all_configured_cores = set() # To check for overlaps or unassigned cores if needed later
-            for cid_key, component_names in self.config.get('clos_association', {}).items():
-                clos_id = int(cid_key)
-                cores_for_this_clos = set()
-                if isinstance(component_names, list):
-                    for comp_name in component_names:
-                        cores_for_this_comp = ran_cores.get(comp_name, [])
-                        if not cores_for_this_comp:
-                            self._log(WARN, f"SST-CP: Component '{comp_name}' for CLOS {clos_id} has no cores defined in 'ran_cores'.")
-                        cores_for_this_clos.update(cores_for_this_comp)
-                else:
-                    self._log(WARN, f"SST-CP: Components for CLOS {clos_id} ('{component_names}') is not a list. Skipping.")
-                    continue
-
-                # Ensure RU Timing cores are handled, typically in a high-priority CLOS (e.g., CLOS 0)
-                if clos_id == 0 and self.ru_timing_core_indices: # Assuming CLOS 0 is high priority
-                    self._log(INFO, f"SST-CP: Ensuring RU_Timing cores {self.ru_timing_core_indices} are in CLOS 0.")
-                    cores_for_this_clos.update(self.ru_timing_core_indices)
-                
-                if cores_for_this_clos:
-                    core_list_str = ",".join(map(str, sorted(list(cores_for_this_clos))))
-                    self._run_command(["intel-speed-select", "-c", core_list_str, "core-power", "assoc", "-c", str(clos_id)])
-                    self._log(INFO, f"SST-CP: Associated cores [{core_list_str}] to CLOS {clos_id}.")
-                    all_configured_cores.update(cores_for_this_clos)
-                elif clos_id == 0 and self.ru_timing_core_indices and not component_names: # RU cores only in CLOS0
-                     core_list_str = ",".join(map(str, sorted(list(self.ru_timing_core_indices))))
-                     self._run_command(["intel-speed-select", "-c", core_list_str, "core-power", "assoc", "-c", str(clos_id)])
-                     self._log(INFO, f"SST-CP: Associated RU_Timing cores [{core_list_str}] to CLOS {clos_id}.")
-                     all_configured_cores.update(self.ru_timing_core_indices)
-                else:
-                    self._log(WARN, f"SST-CP: No cores to associate with CLOS {clos_id} based on components '{component_names}'.")
-            self._log(INFO, "--- Intel SST-CP Configuration Complete ---")
-        except Exception as e:
-            self._log(ERROR, f"Intel SST-CP setup error: {e}")
-            if not self.dry_run:
-                raise RuntimeError(f"SST-CP Setup Failed: {e}")
-
-
-    def _read_current_tdp_limit_w(self) -> float:
-        if self.dry_run and hasattr(self, 'optimizer_target_tdp_w'): # Use the target if in dry run and optimizer has set one
-            return self.optimizer_target_tdp_w # Or self.current_tdp_w if that's more accurate for "actual"
-        try:
-            with open(self.power_limit_uw_file, 'r') as f:
-                return int(f.read().strip()) / 1e6
-        except Exception as e:
-            self._log(WARN, f"Could not read {self.power_limit_uw_file}, returning configured min_tdp ({self.tdp_min_w}W). Error: {e}")
-            return float(self.tdp_min_w)
-
-    def _set_tdp_limit_w(self, tdp_watts: float, context: str = ""):
-        clamped_tdp_uw = int(max(self.tdp_min_w * 1e6, min(tdp_watts * 1e6, self.tdp_max_w * 1e6)))
-        new_tdp_w = clamped_tdp_uw / 1e6
-
-        # Check if the change is significant enough to log/act
-        significant_change = abs(self.current_tdp_w - new_tdp_w) > 0.01 # More than 0.01W difference
-
-        if self.dry_run:
-            if significant_change:
-                self._log(INFO, f"[DRY RUN] {context}. New Target TDP: {new_tdp_w:.1f}W (Previous: {self.current_tdp_w:.1f}W).")
-            self.current_tdp_w = new_tdp_w
-            return
-
-        try:
-            # Read current hardware limit to avoid unnecessary writes
-            with open(self.power_limit_uw_file, 'r') as f_read:
-                current_hw_limit_uw = int(f_read.read().strip())
-            if current_hw_limit_uw == clamped_tdp_uw:
-                if significant_change: # Update internal state even if HW is same
-                    self._log(INFO, f"{context}. Target TDP: {new_tdp_w:.1f}W (already set in HW, updating internal state).")
-                    self.current_tdp_w = new_tdp_w
-                return # No need to write
-        except Exception as e:
-            self._log(WARN, f"Could not read {self.power_limit_uw_file} before write: {e}. Proceeding with write.")
-
-        try:
-            self._log(INFO, f"{context}. Setting TDP to: {new_tdp_w:.1f}W (from {self.current_tdp_w:.1f}W).")
-            with open(self.power_limit_uw_file, 'w') as f_write:
-                f_write.write(str(clamped_tdp_uw))
-            self.current_tdp_w = new_tdp_w # Update internal state after successful write
-        except OSError as e:
-            self._log(ERROR, f"OSError writing TDP to {self.power_limit_uw_file}: {e}")
-            # Potentially revert self.current_tdp_w or mark state as uncertain
-            raise RuntimeError(f"OSError setting TDP: {e}") # Critical failure
-        except Exception as e:
-            self._log(ERROR, f"Exception writing TDP: {e}")
-            raise RuntimeError(f"Exception setting TDP: {e}") # Critical failure
-
-    def _run_ru_timing_pid_step(self, current_ru_cpu_usage: float):
-        if not self.ru_timing_core_indices:
-            return # PID is disabled if no RU cores
-
-        error = self.target_ru_cpu_usage - current_ru_cpu_usage  # Positive error means usage is too low
-        abs_error = abs(error)
-        
-        # Sensitivity threshold: Only act if error is significant
-        # Example: if target is 99.5% and sensitivity is 0.001 (0.1%), then threshold is ~0.0995%
-        sensitivity_threshold = self.target_ru_cpu_usage * self.tdp_adj_sensitivity_factor
-        
-        if abs_error > sensitivity_threshold:
-            # Determine step size: larger step if error is much larger than sensitivity threshold
-            step_size = self.tdp_adj_step_w_large if abs_error > (sensitivity_threshold * self.adaptive_step_far_thresh_factor) else self.tdp_adj_step_w_small
-            
-            # If usage is too low (error > 0), we need to DECREASE TDP to make CPU busier (lower freq)
-            # If usage is too high (error < 0), we need to INCREASE TDP to make CPU less busy (higher freq headroom)
-            tdp_change_w = -step_size if error > 0 else step_size
-            
-            # Apply the change
-            # The base for adjustment is the current actual TDP
-            new_target_tdp = self.current_tdp_w + tdp_change_w
-            
-            ctx = (f"RU_PID: RU CPU {current_ru_cpu_usage:.2f}% (Target {self.target_ru_cpu_usage:.2f}%), "
-                   f"Error {error:.2f}%, TDP Change {tdp_change_w:.1f}W")
-            self._set_tdp_limit_w(new_target_tdp, context=ctx)
-        # else:
-            # self._log(DEBUG_ALL, f"RU_PID: RU CPU {current_ru_cpu_usage:.2f}%, Error {error:.2f}% within sensitivity threshold.")
-
-
-    def _run_bandit_optimizer_step(self, current_efficiency_bits_per_uj: Optional[float]):
-        """ Selects an arm (TDP delta), applies it, and updates the bandit based on previous action's reward. """
-        
-        # 1. Update bandit with the reward from the PREVIOUS action (if any)
-        if self.last_selected_bandit_arm is not None:
-            if current_efficiency_bits_per_uj is not None and math.isfinite(current_efficiency_bits_per_uj):
-                self.thompson_sampler.update_arm(self.last_selected_bandit_arm, current_efficiency_bits_per_uj)
-            else:
-                self._log(WARN, f"Bandit: Invalid efficiency ({current_efficiency_bits_per_uj}) for arm '{self.last_selected_bandit_arm}'. Skipping update.")
-                # Optionally, you could penalize or use a default low reward here.
-                # For now, we just skip the update for this arm for this round.
-        
-        # 2. Select a new arm (TDP delta to try for the NEXT interval)
-        selected_arm_key = self.thompson_sampler.select_arm()
-        tdp_delta_w = self.bandit_actions[selected_arm_key]
-        self.last_selected_bandit_arm = selected_arm_key # Store for next update
-
-        # 3. Determine the new target TDP
-        #    Base the delta on the Bandit's *intended* target from the last step,
-        #    or current TDP if it's the first run.
-        base_tdp_for_bandit_decision = self.optimizer_target_tdp_w
-        
-        proposed_next_tdp_by_bandit = base_tdp_for_bandit_decision + tdp_delta_w
-        
-        # Clamp to ensure it's within global min/max (though _set_tdp_limit_w also does this)
-        # proposed_next_tdp_by_bandit = max(self.tdp_min_w, min(proposed_next_tdp_by_bandit, self.tdp_max_w))
-        
-        self._log(INFO, f"Bandit: Arm='{selected_arm_key}', Delta={tdp_delta_w:.1f}W. "
-                        f"Base TDP for decision: {base_tdp_for_bandit_decision:.1f}W. "
-                        f"Proposed TDP: {proposed_next_tdp_by_bandit:.1f}W.")
-
-        # 4. Apply the new TDP
-        #    This TDP will be active during the next efficiency_measurement_interval.
-        #    The RU_PID might still adjust it in finer steps during that interval.
-        self._set_tdp_limit_w(proposed_next_tdp_by_bandit, context=f"Optimizer Bandit (Arm: {selected_arm_key})")
-        
-        # 5. Update the bandit's view of its intended target
-        #    It should be what was actually set (after clamping by _set_tdp_limit_w, not after RU_PID tweaks yet)
-        self.optimizer_target_tdp_w = self._read_current_tdp_limit_w() # Read back what was set by _set_tdp_limit_w
-
-    def _get_pkg_power_w(self) -> Tuple[float, bool]:
-        if not os.path.exists(self.energy_uj_file): return 0.0, False
-        try:
-            with open(self.energy_uj_file, 'r') as f: current_e_uj = int(f.read().strip())
-            now = time.monotonic(); pwr_w, ok = 0.0, False
-            if self.last_pkg_energy_uj is not None and self.last_energy_read_time is not None:
-                dt = now - self.last_energy_read_time
-                if dt > 0.001: # Avoid division by zero or too small interval
-                    de = current_e_uj - self.last_pkg_energy_uj
-                    if de < 0: # RAPL counter wrapped
-                        max_r = self.max_energy_val_rapl
-                        try:
-                            with open(os.path.join(self.rapl_base_path, "max_energy_range_uj"),'r') as f_max_r:
-                                max_r_val = int(f_max_r.read().strip());
-                                if max_r_val > 0: max_r = max_r_val
-                        except Exception: pass # Use configured default
-                        de += max_r
-                    pwr_w = (de / 1e6) / dt # uJ/s = W
-                    if 0 <= pwr_w < 5000: # Sanity check (5000W is very high for a server pkg)
-                        ok = True
-                    else:
-                        self._log(DEBUG_ALL, f"Unrealistic PkgPwr calculated: {pwr_w:.1f}W (dE={de}, dt={dt:.3f}s). Resetting baseline.")
-                        ok=False; pwr_w=0.0
-                        # Reset baseline to avoid propagation of error
-                        self.last_pkg_energy_uj, self.last_energy_read_time = current_e_uj, now
-                        return pwr_w, ok # Return immediately after reset
-            
-            # Update baseline only if calculation was ok or it's the first time
-            if ok or self.last_pkg_energy_uj is None:
-                 self.last_pkg_energy_uj, self.last_energy_read_time = current_e_uj, now
-            return pwr_w, ok
-        except Exception as e:
-            self._log(WARN, f"Exception in _get_pkg_power_w: {e}");
-            return 0.0, False
-
-    def _read_current_energy_uj(self) -> Optional[int]:
-        if not os.path.exists(self.energy_uj_file): return None
-        try:
-            with open(self.energy_uj_file, 'r') as f: return int(f.read().strip())
-        except Exception as e: self._log(WARN, f"Could not read {self.energy_uj_file}: {e}"); return None
-
-    def _get_interval_energy_uj_for_optimizer(self) -> Optional[float]:
-        """Calculates energy consumed since the last optimizer interval's end."""
-        current_e_uj = self._read_current_energy_uj()
-        if current_e_uj is None: return None
-
-        if self.energy_at_last_optimizer_interval_uj is None: # First call or reset
-            self.energy_at_last_optimizer_interval_uj = current_e_uj
-            return None # Not enough data for a delta yet
-
-        delta_e = float(current_e_uj - self.energy_at_last_optimizer_interval_uj)
-
-        if delta_e < 0: # RAPL counter wrapped
-            max_r = self.max_energy_val_rapl
-            try:
-                with open(os.path.join(self.rapl_base_path,"max_energy_range_uj"),'r') as f_max_r:
-                    max_r_val = int(f_max_r.read().strip());
-                    if max_r_val > 0: max_r = max_r_val
-            except Exception as e: self._log(WARN, f"Could not read max_energy_range_uj: {e}"); pass
-            delta_e += max_r
-        
-        self.energy_at_last_optimizer_interval_uj = current_e_uj # Update baseline for NEXT interval
-        return delta_e
-
-    def _run_contextual_bandit_optimizer_step(self, current_efficiency_bits_per_uj: Optional[float],
-                                             current_context_vector: Optional[np.array],
-                                             significant_throughput_change: bool): # Same as before
-        if self.last_selected_bandit_arm is not None and self.last_context_vector is not None:
-            if significant_throughput_change:
-                self._log(WARN, f"ContextualBandit: Skipping update for arm '{self.last_selected_bandit_arm}' due to significant throughput change.")
-            elif current_efficiency_bits_per_uj is not None and math.isfinite(current_efficiency_bits_per_uj):
-                self.contextual_bandit.update_arm(self.last_selected_bandit_arm, self.last_context_vector, current_efficiency_bits_per_uj)
-            else:
-                self._log(WARN, f"ContextualBandit: Invalid efficiency ({current_efficiency_bits_per_uj}) for arm '{self.last_selected_bandit_arm}'. Skipping update.")
-        
-        if current_context_vector is None:
-            self._log(WARN, "ContextualBandit: Current context vector is None. Cannot select arm. Holding TDP by choosing 'hold' arm.")
-            selected_arm_key = "hold" # Default to 'hold'
-            if "hold" not in self.bandit_actions: # If 'hold' not defined, pick random
-                 selected_arm_key = random.choice(list(self.bandit_actions.keys()))
-        else:
-            selected_arm_key = self.contextual_bandit.select_arm(current_context_vector)
-        
-        self.last_selected_bandit_arm = selected_arm_key
-        self.last_context_vector = current_context_vector 
-
-        tdp_delta_w = self.bandit_actions.get(selected_arm_key, 0.0) 
-
-        base_tdp_for_bandit_decision = self.optimizer_target_tdp_w
-        proposed_next_tdp_by_bandit = base_tdp_for_bandit_decision + tdp_delta_w
-        
-        self._log(INFO, f"ContextualBandit: Arm='{selected_arm_key}', Delta={tdp_delta_w:.1f}W. "
-                        f"Base TDP: {base_tdp_for_bandit_decision:.1f}W. "
-                        f"Proposed TDP: {proposed_next_tdp_by_bandit:.1f}W.")
-        if current_context_vector is not None:
-             self._log(DEBUG_ALL, f"ContextualBandit: Context for decision: {['{:.2f}'.format(x) for x in current_context_vector]}")
-
-        self._set_tdp_limit_w(proposed_next_tdp_by_bandit, context=f"Optimizer CB (Arm: {selected_arm_key})")
-        self.optimizer_target_tdp_w = self._read_current_tdp_limit_w()
-
-
-    def _kpm_indication_callback(self, e2_agent_id: str, subscription_id: str,
-                                 indication_hdr_bytes: bytes, indication_msg_bytes: bytes):
-        # Now only expects Style 4. The subscription_id is the E2EventInstanceId.
-        self._log(DEBUG_KPM, f"KPM CB: Agent:{e2_agent_id}, Sub(E2EventInstanceID):{subscription_id}, Time:{time.monotonic():.3f}")
-        if not self.e2sm_kpm: self._log(WARN, f"KPM from {e2_agent_id}, but e2sm_kpm unavailable."); return
-
-        try:
-            kpm_hdr_info = self.e2sm_kpm.extract_hdr_info(indication_hdr_bytes)
-            kpm_meas_data = self.e2sm_kpm.extract_meas_data(indication_msg_bytes)
-
-            if not kpm_meas_data: 
-                self._log(WARN, f"KPM CB Style 4: Failed to extract KPM data from {e2_agent_id}. HDR: {kpm_hdr_info}"); return
-            
-            # ueMeasData is a dictionary where keys are UE IDs (strings)
-            ue_meas_data_map = kpm_meas_data.get("ueMeasData", {})
-            if not isinstance(ue_meas_data_map, dict):
-                self._log(WARN, f"KPM CB Style 4: Invalid 'ueMeasData' format from {e2_agent_id}. Data: {kpm_meas_data}")
-                return
-            
-            gNB_total_dl_bits_this_report = 0.0
-            gNB_total_ul_bits_this_report = 0.0
-            ues_in_this_report_for_this_gnb = set()
-
-            for ue_id_str, per_ue_measurements in ue_meas_data_map.items():
-                global_ue_id = f"{e2_agent_id}_{ue_id_str}" # Create a globally unique UE identifier
-                ues_in_this_report_for_this_gnb.add(global_ue_id)
-
-                ue_metrics = per_ue_measurements.get("measData", {})
-                if not isinstance(ue_metrics, dict):
-                    self._log(WARN, f"KPM CB Style 4: Invalid 'measData' for UE {global_ue_id} from {e2_agent_id}.")
-                    continue
-                
-                # Extract desired per-UE metrics and sum them for gNB total
-                for metric_name, value_list in ue_metrics.items():
-                    if isinstance(value_list, list) and value_list:
-                        value = sum(value_list) # Sum if multiple values reported for a metric in a period (should be 1 for RLC volume)
-                        try:
-                            if metric_name == 'DRB.RlcSduTransmittedVolumeDL':
-                                gNB_total_dl_bits_this_report += float(value) * 1000.0 # kbits to bits
-                            elif metric_name == 'DRB.RlcSduTransmittedVolumeUL':
-                                gNB_total_ul_bits_this_report += float(value) * 1000.0 # kbits to bits
-                            # Add PRB metrics later if needed for context
-                            # elif metric_name == 'RRU.PRBUsedDL':
-                            #    pass # Store or process PRB data
-                        except (ValueError, TypeError):
-                             self._log(WARN, f"KPM CB Style 4: Metric '{metric_name}' for UE {global_ue_id} value '{value_list}' invalid.")
-            
-            with self.kpm_data_lock:
-                # Accumulate total bits for the gNB
-                if e2_agent_id not in self.accumulated_kpm_metrics:
-                    self.accumulated_kpm_metrics[e2_agent_id] = {'bits_sum_dl':0.0, 'bits_sum_ul':0.0, 'num_reports':0}
-                acc_data = self.accumulated_kpm_metrics[e2_agent_id]
-                acc_data['bits_sum_dl'] += gNB_total_dl_bits_this_report
-                acc_data['bits_sum_ul'] += gNB_total_ul_bits_this_report
-                acc_data['num_reports'] += 1
-                
-                # Add reported UEs to the interval-wide set for UE counting
-                self.current_interval_ue_ids.update(ues_in_this_report_for_this_gnb)
-                
-                self._log(DEBUG_KPM, f"KPM CB Style 4: {e2_agent_id}: Added DL_b={gNB_total_dl_bits_this_report:.0f}, UL_b={gNB_total_ul_bits_this_report:.0f}. "
-                                     f"Reported {len(ues_in_this_report_for_this_gnb)} UEs. Total unique UEs for interval so far: {len(self.current_interval_ue_ids)}")
-
-        except Exception as e: self._log(ERROR, f"Error processing KPM Style 4 indication from {e2_agent_id}: {e}"); import traceback; traceback.print_exc()
-
-
-    def _get_and_reset_accumulated_kpm_metrics(self) -> Dict[str, Dict[str, Any]]: # Renamed
-        with self.kpm_data_lock:
-            snap = {}
-            for gnb_id, data in self.accumulated_kpm_metrics.items(): # Use the new accumulator
-                snap[gnb_id] = {
-                    'dl_bits': data.get('bits_sum_dl', 0.0),
-                    'ul_bits': data.get('bits_sum_ul', 0.0),
-                    'reports_in_interval': data.get('num_reports', 0)
-                }
-                data['bits_sum_dl'] = 0.0
-                data['bits_sum_ul'] = 0.0
-                data['num_reports'] = 0
-        return snap
-
-    def _get_and_reset_current_ue_count(self) -> int: # Same as before
-        with self.kpm_data_lock:
-            count = len(self.current_interval_ue_ids)
-            self.current_interval_ue_ids.clear() 
-        return count
-
-    def _setup_kpm_subscriptions(self): # Heavily modified for Style 4 only
-        self._log(INFO, "--- Setting up KPM Style 4 Subscriptions (Per-UE Metrics) ---")
-        if not self.e2sm_kpm: self._log(WARN, "e2sm_kpm module unavailable. Cannot subscribe."); return
-        
-        nodes = list(self.gnb_ids_map.values()) 
-        if not nodes: self._log(WARN, "No gNB IDs configured for KPM subscriptions."); return
-
-        kpm_config = self.config.get('kpm_subscriptions', {})
-        
-        # Style 4 specific settings from config
-        style4_metrics = kpm_config.get('style4_metrics_per_ue', [
-            'DRB.RlcSduTransmittedVolumeDL', 
-            'DRB.RlcSduTransmittedVolumeUL',
-            # 'RRU.PRBUsedDL', # Add these if you want to collect PRB data
-            # 'RRU.PRBUsedUL'
-        ])
-        style4_report_p_ms = int(kpm_config.get('style4_report_period_ms', 1000)) # Default to 1s
-        style4_gran_p_ms = int(kpm_config.get('style4_granularity_period_ms', style4_report_p_ms))
-        
-        # Default matching condition: try to get all UEs.
-        # This might need to be an empty list `[]` depending on gNB/E2SM interpretation for "match all".
-        # The example used a dummy rSRP. Let's make it configurable.
-        default_match_all_cond = [{'testCondInfo': {'testType': ('ul-rSRP', 'true'), 'testExpr': 'lessthan', 'testValue': ('valueInt', 10000)}}] # Match UEs with RSRP < 10000 (effectively all)
-        matching_ue_conds_config = kpm_config.get('style4_matching_ue_conditions', default_match_all_cond)
-            
-        self._log(INFO, f"KPM Style 4: MetricsPerUE: {style4_metrics}, ReportPeriod={style4_report_p_ms}ms, Granularity={style4_gran_p_ms}ms, Conditions: {matching_ue_conds_config}")
-        
-        successes = 0
-        for node_id_str in nodes:
-            # Temporary storage for the fragile subscription ID to style mapping workaround
-            # This assumes xAppBase's subscribe is blocking and response is immediate for this sub.
-            self._last_ric_sub_id_attempted = None # Will be set by xAppBase.subscribe if it returns it
-            self._last_style_attempted = 4
-
-            if self.dry_run:
-                self._log(INFO, f"[DRY RUN] KPM Style 4 Sub: Node {node_id_str}")
-                # No easy way to get a dummy E2EventInstanceId for dry run here for the map key
-                successes+=1; continue
-            try:
-                self._log(INFO, f"Subscribing KPM Style 4: Node {node_id_str}")
-                # The subscribe_report_service_style_4 call from xAppBase example will be used.
-                # It internally calls the generic self.subscribe which might give us a RIC Subscription ID.
-                self.e2sm_kpm.subscribe_report_service_style_4(
-                    e2_node_id=node_id_str, 
-                    report_interval_ms=style4_report_p_ms, 
-                    matching_ue_conds=matching_ue_conds_config, 
-                    meas_names_per_ue=style4_metrics, 
-                    granularity_period_ms=style4_gran_p_ms, 
-                    callback=self._kpm_indication_callback
-                )
-                # After this call, _subscription_response_callback should be triggered by xAppBase,
-                # which then (with the workaround) populates self.kpm_subscription_id_to_style_map.
-                # This is still the weakest link without xAppBase modifications.
-                # For now, _kpm_indication_callback doesn't use kpm_subscription_id_to_style_map as only one style is active.
-                
-                with self.kpm_data_lock: # Initialize accumulator for this node
-                    if node_id_str not in self.accumulated_kpm_metrics:
-                        self.accumulated_kpm_metrics[node_id_str] = {'bits_sum_dl':0.0, 'bits_sum_ul':0.0, 'num_reports':0}
-                successes += 1
-            except Exception as e: self._log(ERROR, f"KPM Style 4 subscription failed for {node_id_str}: {e}"); import traceback; traceback.print_exc()
-        
-        if successes > 0: self._log(INFO, f"--- KPM Style 4 Subscriptions: {successes} successful attempts for {len(nodes)} nodes. ---")
-        elif nodes: self._log(WARN, "No KPM Style 4 subscriptions successfully initiated.")
-        else: self._log(INFO, "--- No KPM nodes to subscribe to. ---")
-
-    # Override _subscription_response_callback from xAppBase to attempt to map sub ID to style
-    # THIS IS A HACK due to xAppBase current structure. Needs proper fix in xAppBase.
-    def _subscription_response_callback(self, name, path, data, ctype):
-        try:
-            parsed_data = json.loads(data)
-            subscription_id_ric = parsed_data['SubscriptionId'] 
-            e2_event_instance_id = parsed_data['SubscriptionInstances'][0]["E2EventInstanceId"] 
-            
-            self._log(INFO,f"Subscription Response: RIC_SubID={subscription_id_ric} maps to E2EventInstanceID={e2_event_instance_id}")
-            
-            # The xAppBase itself should handle mapping E2EventInstanceId to the callback.
-            # Since we only use Style 4 now, the differentiation in _kpm_indication_callback is not strictly needed by style number.
-            # However, xAppBase's `self.my_subscriptions` dictionary uses E2EventInstanceId as key for the callback.
-
-        except Exception as e:
-            self._log(ERROR, f"Error in _subscription_response_callback processing data '{data}': {e}")
-        
-        response = {'response': 'OK', 'status': 200, 'payload': '{}', 'ctype': 'application/json', 'attachment': None, 'mode': 'plain'}
-        return response
-
-
-if __name__ == "__main__": # Same as LinUCB version
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="EcoRAN Power Manager xApp with Contextual Bandit Optimizer")
     parser.add_argument("config_path", type=str, help="Path to YAML configuration file.")
     parser.add_argument("--http_server_port", type=int, default=8090, help="HTTP server port for xAppBase (default: 8090).")
     parser.add_argument("--rmr_port", type=int, default=4560, help="RMR port for xAppBase (default: 4560).")
     args = parser.parse_args()
+
     manager = None
     try:
         manager = PowerManager(args.config_path, args.http_server_port, args.rmr_port)
+        
+        # xAppBase.signal_handler calls self.stop(), which sets self.running = False
         signal.signal(signal.SIGINT, manager.signal_handler)
         signal.signal(signal.SIGTERM, manager.signal_handler)
-        if hasattr(signal, 'SIGQUIT'): signal.signal(signal.SIGQUIT, manager.signal_handler)
+        if hasattr(signal, 'SIGQUIT'): # SIGQUIT might not be available on Windows
+             signal.signal(signal.SIGQUIT, manager.signal_handler)
         manager._log(INFO, "Registered signal handlers from xAppBase to control 'self.running'.")
-        manager.run_power_management_xApp()
+
+        # The main execution method name in PowerManager is run_power_management_xapp
+        manager.run_power_management_xapp()
+
     except RuntimeError as e: 
-        print(f"E: Critical error: {e}", file=sys.stderr)
+        print(f"E: Critical error during PowerManager execution: {e}", file=sys.stderr)
         if manager and hasattr(manager, '_log') and manager.logger.hasHandlers(): manager._log(ERROR, f"Critical error: {e}")
         sys.exit(1)
     except SystemExit as e: 
@@ -1038,7 +974,7 @@ if __name__ == "__main__": # Same as LinUCB version
         if manager and hasattr(manager, '_log') and manager.logger.hasHandlers(): manager._log(INFO, f"Application terminated (SystemExit: {code}).")
         sys.exit(code) 
     except Exception as e:
-        print(f"E: An unexpected error at top level: {e}", file=sys.stderr)
+        print(f"E: An unexpected error occurred at the top level: {e}", file=sys.stderr)
         import traceback; traceback.print_exc(file=sys.stderr)
         if manager and hasattr(manager, '_log') and manager.logger.hasHandlers(): manager._log(ERROR, f"TOP LEVEL UNEXPECTED ERROR: {e}\n{traceback.format_exc()}")
         sys.exit(1)
