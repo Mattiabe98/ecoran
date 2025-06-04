@@ -23,7 +23,7 @@ RUN rm -f riclibe2ap_${E2AP_VERSION}_amd64.deb riclibe2ap-dev_${E2AP_VERSION}_am
 
 
 # ---- Final image ----
-FROM python:3.8-slim
+FROM python:3.10-slim
 
 ARG RMR_VERSION=4.9.4
 ARG E2AP_VERSION=1.1.0
