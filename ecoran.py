@@ -751,7 +751,7 @@ class PowerManager(xAppBase):
             self.current_interval_ue_ids.clear() 
         return count
 
-def _setup_kpm_subscriptions(self): # Heavily modified for Style 4 only
+    def _setup_kpm_subscriptions(self): # Heavily modified for Style 4 only
         self._log(INFO, "--- Setting up KPM Style 4 Subscriptions (Per-UE Metrics) ---")
         if not self.e2sm_kpm: self._log(WARN, "e2sm_kpm module unavailable. Cannot subscribe."); return
         
