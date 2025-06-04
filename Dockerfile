@@ -49,7 +49,7 @@ ENV LD_LIBRARY_PATH=/lib:/usr/lib:/usr/local/lib
 # Install Python dependencies
 RUN pip install --upgrade pip && \
     pip install psutil PyYAML certifi six python_dateutil setuptools urllib3 logger requests \
-    inotify_simple mdclogpy google-api-python-client msgpack ricsdl asn1tools
+    inotify_simple mdclogpy google-api-python-client msgpack ricsdl asn1tools numpy contextualbandits
 
 # Create dirs
 RUN mkdir -p /opt/xApps && chmod -R 755 /opt/xApps
