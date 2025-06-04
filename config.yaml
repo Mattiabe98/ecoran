@@ -54,6 +54,16 @@ kpm_subscriptions:
   style4_report_period_ms: 5000 # Changed from 5000 to 1000 as per your last working example
   style4_granularity_period_ms: 5000 # Changed from 5000 to 1000
 
+contextual_bandit:
+  # ... other bandit params
+  context_dimension: 6 # Bias, TotalBitsNorm, NumUEsNorm, NumActiveDUsNorm, RUCpuNorm, CurrentTDPNorm
+  normalization_parameters:
+    total_bits_per_second: {'min': 0.0, 'max': 1.0e9} # Example for 1 Gbps
+    num_ues: {'min': 0.0, 'max': 100.0}
+    num_active_dus: {'min': 0.0, 'max': 4.0} # Adjust to your number of DUs
+    ru_cpu_usage: {'min': 80.0, 'max': 100.0}
+    current_tdp: {'min': 90.0, 'max': 170.0} # Should match tdp_range from elsewhere
+
 # ------------------------------------------------------------------------------
 # Monitoring, Control Loop Timings & Logging
 # ------------------------------------------------------------------------------
