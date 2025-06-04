@@ -767,8 +767,7 @@ class PowerManager(xAppBase):
         style4_report_p_ms = int(kpm_config.get('style4_report_period_ms', 1000))
         style4_gran_p_ms = int(kpm_config.get('style4_granularity_period_ms', style4_report_p_ms))
         
-        default_match_all_cond = [{'testCondInfo': {'testType': ('ul-rSRP', 'true'), 'testExpr': 'lessthan', 'testValue': ('valueInt', 10000)}}]
-        matching_ue_conds_config = kpm_config.get('style4_matching_ue_conditions', default_match_all_cond)
+        default_match_all_cond = [{'testCondInfo': {'testType': ('ul-rSRP', 'true'), 'testExpr': 'lessthan', 'testValue': ('valueInt', 1000)}}]
             
         self._log(INFO, f"KPM Style 4: MetricsPerUE: {style4_metrics}, ReportPeriod={style4_report_p_ms}ms, Granularity={style4_gran_p_ms}ms, Conditions: {matching_ue_conds_config}")
         
@@ -787,7 +786,7 @@ class PowerManager(xAppBase):
                 self.e2sm_kpm.subscribe_report_service_style_4(
                     node_id_str,                # e2_node_id
                     style4_report_p_ms,         # report_period
-                    matching_ue_conds_config,   # matchingUeConds
+                    default_match_all_cond,   # matchingUeConds
                     style4_metrics,             # metric_names (meas_names_per_ue)
                     style4_gran_p_ms,           # granul_period
                     self._kpm_indication_callback # subscription_callback
