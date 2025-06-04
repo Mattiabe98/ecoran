@@ -769,7 +769,7 @@ class PowerManager(xAppBase):
         
         default_match_all_cond = [{'testCondInfo': {'testType': ('ul-rSRP', 'true'), 'testExpr': 'lessthan', 'testValue': ('valueInt', 1000)}}]
             
-        self._log(INFO, f"KPM Style 4: MetricsPerUE: {style4_metrics}, ReportPeriod={style4_report_p_ms}ms, Granularity={style4_gran_p_ms}ms, Conditions: {matching_ue_conds_config}")
+        self._log(INFO, f"KPM Style 4: MetricsPerUE: {style4_metrics}, ReportPeriod={style4_report_p_ms}ms, Granularity={style4_gran_p_ms}ms, Conditions: {default_match_all_cond}")
         
         successes = 0
         for node_id_str in nodes:
