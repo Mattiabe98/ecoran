@@ -57,14 +57,11 @@ kpm_subscriptions:
   # Matching UE Conditions for Style 4.
   style4_matching_ue_conditions: [
     {'testCondInfo': {
-        'testType': {
-            'ul-rSRP': 'true' # Assuming 'true' is a string or handled by E2SM lib
-        },
+        'testType': ('ul-rSRP', 'true'),  # Corrected: tuple instead of dict
         'testExpr': 'lessthan',
-        'testValue': {
-            'valueInt': 10000
-        }
-    }}
+        'testValue': ('valueInt', 10000)   # Assuming valueInt is the choice for testValue
+      }
+    }
   ]
 
 # ------------------------------------------------------------------------------
