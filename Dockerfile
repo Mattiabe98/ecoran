@@ -1,4 +1,4 @@
-FROM python:3.8-slim as builder
+FROM python:3.10-slim as builder
 
 RUN apt-get update && apt-get install -y \
     git wget curl less nano \
@@ -49,7 +49,7 @@ ENV LD_LIBRARY_PATH=/lib:/usr/lib:/usr/local/lib
 # Install Python dependencies
 RUN pip install --upgrade pip && \
     pip install psutil PyYAML certifi six python_dateutil setuptools urllib3 logger requests \
-    inotify_simple mdclogpy google-api-python-client msgpack ricsdl asn1tools numpy==2.2.5 contextualbandits 
+    inotify_simple mdclogpy google-api-python-client msgpack ricsdl asn1tools contextualbandits numpy
 
 # Create dirs
 RUN mkdir -p /opt/xApps && chmod -R 755 /opt/xApps
