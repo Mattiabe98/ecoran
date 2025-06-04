@@ -32,8 +32,8 @@ ARG E2AP_VERSION=1.1.0
 RUN apt-get update && apt-get install -y \
     git wget curl less nano \
     nmap mtr net-tools tcpdump apt-utils sudo jq tree iproute2 iputils-ping traceroute \
-    libffi-dev libnl-3-dev libnl-genl-3-dev && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    libffi-dev libnl-3-dev libnl-genl-3-dev gcc && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* 
 
 # Copy built shared libs and rmr_probe
 COPY --from=builder /usr/local/lib/librmr_si.so.${RMR_VERSION} /usr/local/lib/librmr_si.so
