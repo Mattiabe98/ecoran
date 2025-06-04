@@ -13,6 +13,7 @@ from logging.handlers import RotatingFileHandler
 import random
 import math
 import numpy as np
+import json
 
 try:
     from lib.xAppBase import xAppBase # Assuming this is in PYTHONPATH or ./lib/
