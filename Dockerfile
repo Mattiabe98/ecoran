@@ -32,7 +32,7 @@ ARG E2AP_VERSION=1.1.0
 RUN apt-get update && apt-get install -y \
     git wget curl less nano \
     nmap mtr net-tools tcpdump apt-utils sudo jq tree iproute2 iputils-ping traceroute \
-    libffi-dev libnl-3-dev libnl-genl-3-dev gcc && \
+    libffi-dev libnl-3-dev libnl-genl-3-dev gcc g++ && \
     apt-get clean && rm -rf /var/lib/apt/lists/* 
 
 # Copy built shared libs and rmr_probe
