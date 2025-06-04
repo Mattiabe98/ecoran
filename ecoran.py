@@ -751,7 +751,7 @@ class PowerManager(xAppBase):
             self.current_interval_ue_ids.clear() 
         return count
 
-    def _setup_kpm_subscriptions(self):
+def _setup_kpm_subscriptions(self): # Heavily modified for Style 4 only
         self._log(INFO, "--- Setting up KPM Style 4 Subscriptions (Per-UE Metrics) ---")
         if not self.e2sm_kpm: self._log(WARN, "e2sm_kpm module unavailable. Cannot subscribe."); return
         
@@ -760,29 +760,40 @@ class PowerManager(xAppBase):
 
         kpm_config = self.config.get('kpm_subscriptions', {})
         
-        style4_metrics = kpm_config.get('style4_metrics_per_ue', ['DRB.RlcSduTransmittedVolumeDL', 'DRB.RlcSduTransmittedVolumeUL'])
+        style4_metrics = kpm_config.get('style4_metrics_per_ue', [
+            'DRB.RlcSduTransmittedVolumeDL', 
+            'DRB.RlcSduTransmittedVolumeUL',
+        ])
         style4_report_p_ms = int(kpm_config.get('style4_report_period_ms', 1000))
         style4_gran_p_ms = int(kpm_config.get('style4_granularity_period_ms', style4_report_p_ms))
-        default_match_all_cond = [{'testCondInfo': {'testType': {'ul-rSRP': 'true'}, 'testExpr': 'lessthan', 'testValue': {'valueInt': 10000}}}]
+        
+        default_match_all_cond = [{'testCondInfo': {'testType': ('ul-rSRP', 'true'), 'testExpr': 'lessthan', 'testValue': ('valueInt', 10000)}}]
         matching_ue_conds_config = kpm_config.get('style4_matching_ue_conditions', default_match_all_cond)
             
         self._log(INFO, f"KPM Style 4: MetricsPerUE: {style4_metrics}, ReportPeriod={style4_report_p_ms}ms, Granularity={style4_gran_p_ms}ms, Conditions: {matching_ue_conds_config}")
         
         successes = 0
         for node_id_str in nodes:
+            # self._last_ric_sub_id_attempted = None # No longer strictly needed for style mapping if only one style
+            # self._last_style_attempted = 4 # No longer strictly needed
+
             if self.dry_run:
                 self._log(INFO, f"[DRY RUN] KPM Style 4 Sub: Node {node_id_str}")
                 successes+=1; continue
             try:
                 self._log(INFO, f"Subscribing KPM Style 4: Node {node_id_str}")
+                
+                # --- CORRECTED CALL using positional arguments ---
                 self.e2sm_kpm.subscribe_report_service_style_4(
-                    e2_node_id=node_id_str, 
-                    report_interval_ms=style4_report_p_ms, 
-                    matching_ue_conds=matching_ue_conds_config, 
-                    meas_names_per_ue=style4_metrics, 
-                    granularity_period_ms=style4_gran_p_ms, 
-                    callback=self._kpm_indication_callback
+                    node_id_str,                # e2_node_id
+                    style4_report_p_ms,         # report_period
+                    matching_ue_conds_config,   # matchingUeConds
+                    style4_metrics,             # metric_names (meas_names_per_ue)
+                    style4_gran_p_ms,           # granul_period
+                    self._kpm_indication_callback # subscription_callback
                 )
+                # --- END CORRECTED CALL ---
+                
                 with self.kpm_data_lock:
                     if node_id_str not in self.accumulated_kpm_metrics:
                         self.accumulated_kpm_metrics[node_id_str] = {'bits_sum_dl':0.0, 'bits_sum_ul':0.0, 'num_reports':0}
