@@ -246,6 +246,135 @@ class PowerManager(xAppBase): # Initialization mostly same, KPM part changes
         self._validate_config()
         if self.dry_run: self._log(INFO, "!!!!!!!!!!!! DRY RUN MODE ENABLED !!!!!!!!!!!!")
 
+
+    @xAppBase.start_function # Decorator from your xAppBase
+    def run_power_management_xapp(self): # Main loop structure mostly same
+        # ... (Initializations for TDP, MSR, Energy, SST are THE SAME as the LinUCB version) ...
+        if os.geteuid() != 0 and not self.dry_run:
+            self._log(ERROR, "Must be root for live run. Exiting."); sys.exit(1)
+        
+        try:
+            self.current_tdp_w = self._read_current_tdp_limit_w()
+            self.optimizer_target_tdp_w = self.current_tdp_w
+            self._log(INFO, f"Initial current TDP: {self.current_tdp_w:.1f}W. Optimizer target set to this.")
+
+            if self.ru_timing_core_indices:
+                self._log(INFO, "Priming MSR data..."); self._update_ru_core_msr_data(); time.sleep(0.1); self._update_ru_core_msr_data(); self._log(INFO, "MSR primed.")
+            
+            self.energy_at_last_optimizer_interval_uj = self._read_current_energy_uj()
+            self.last_pkg_energy_uj = self._read_current_energy_uj() 
+            self.last_energy_read_time = time.monotonic()
+            if self.energy_at_last_optimizer_interval_uj is None and not self.dry_run: self._log(WARN, "Could not get initial package energy for optimizer.")
+            
+            self._setup_intel_sst()
+            self._setup_kpm_subscriptions() # This will now attempt Style 4
+
+            now = time.monotonic()
+            self.last_ru_pid_run_time = now
+            self.last_optimizer_run_time = now 
+            self.last_stats_print_time = now
+            # Initialize previous bits for change detection
+            self.total_bits_from_previous_optimizer_interval = 0.0
+
+
+            self._log(INFO, f"\n--- Starting Monitoring & Control Loop ({'DRY RUN' if self.dry_run else 'LIVE RUN'}) ---")
+            self._log(INFO, f"RU PID Interval: {self.ru_timing_pid_interval_s}s | Target RU CPU: {self.target_ru_cpu_usage if self.ru_timing_core_indices else 'N/A'}%")
+            self._log(INFO, f"Contextual Bandit Optimizer Interval: {self.optimizer_decision_interval_s}s | TDP Range: {self.tdp_min_w}W-{self.tdp_max_w}W")
+            self._log(INFO, f"Contextual Bandit Actions (TDP Delta W): {self.bandit_actions}, Alpha: {self.linucb_alpha}, Lambda: {self.linucb_lambda_reg}")
+            self._log(INFO, f"Context Dimension: {self.context_dimension}. Normalization Params (sample for total_bits_per_second): {self.norm_params.get('total_bits_per_second', 'N/A')}")
+            self._log(INFO, f"Stats Print Interval: {self.stats_print_interval_s}s")
+
+            while self.running: # Check self.running flag from xAppBase
+                loop_start_time = time.monotonic()
+
+                if self.ru_timing_core_indices: self._update_ru_core_msr_data()
+                current_ru_cpu_usage_control_val = self._get_control_ru_timing_cpu_usage()
+
+                if loop_start_time - self.last_ru_pid_run_time >= self.ru_timing_pid_interval_s:
+                    if self.ru_timing_core_indices: self._run_ru_timing_pid_step(current_ru_cpu_usage_control_val)
+                    self.last_ru_pid_run_time = loop_start_time
+                
+                if loop_start_time - self.last_optimizer_run_time >= self.optimizer_decision_interval_s:
+                    interval_energy_uj = self._get_interval_energy_uj_for_optimizer()
+                    # Get SUMMED data from Style 4 reports
+                    kpm_data_for_totals = self._get_and_reset_accumulated_kpm_metrics()
+                    current_num_ues = self._get_and_reset_current_ue_count() 
+                    self.current_num_ues_for_log = current_num_ues # For stats log
+
+                    total_bits_optimizer_interval = sum(
+                        d.get('dl_bits', 0.0) + d.get('ul_bits', 0.0)
+                        for d in kpm_data_for_totals.values()
+                    )
+                    num_kpm_reports_processed = sum(d.get('reports_in_interval',0) for d in kpm_data_for_totals.values())
+                    num_active_dus = sum(1 for d in kpm_data_for_totals.values() if d.get('dl_bits',0) + d.get('ul_bits',0) > 0)
+
+                    significant_throughput_change = False
+                    if self.total_bits_from_previous_optimizer_interval is not None: # Check if it's not the very first run
+                        # Avoid division by zero if previous bits was very small or zero.
+                        # Use a small epsilon or check if self.total_bits_from_previous_optimizer_interval is substantial.
+                        denominator = self.total_bits_from_previous_optimizer_interval
+                        if denominator < 1e-6: # If previous bits was effectively zero
+                            if total_bits_optimizer_interval > 1e6 : # And current bits is substantial
+                                significant_throughput_change = True # Consider it a significant ramp-up
+                        elif abs(total_bits_optimizer_interval - denominator) / denominator > self.throughput_change_threshold_for_discard:
+                            relative_change = abs(total_bits_optimizer_interval - denominator) / denominator
+                            self._log(WARN, f"Optimizer: Significant throughput change detected ({relative_change*100:.1f}%). Update for arm {self.last_selected_bandit_arm} might be skipped.")
+                            significant_throughput_change = True
+                    self.total_bits_from_previous_optimizer_interval = total_bits_optimizer_interval
+
+
+                    current_efficiency_for_bandit: Optional[float] = None
+                    if num_kpm_reports_processed > 0 : 
+                        if interval_energy_uj is not None and interval_energy_uj > 1e-3: 
+                            current_efficiency_for_bandit = total_bits_optimizer_interval / interval_energy_uj
+                        elif total_bits_optimizer_interval > 1e-9 and (interval_energy_uj is None or interval_energy_uj <= 1e-3):
+                            current_efficiency_for_bandit = float('inf') 
+                        else: 
+                            current_efficiency_for_bandit = 0.0
+                    
+                    self.most_recent_calculated_efficiency_for_log = current_efficiency_for_bandit
+                    current_actual_tdp_for_context = self.current_tdp_w 
+                    current_context_vec = self._get_current_context_vector(
+                        total_bits_optimizer_interval, current_num_ues, num_active_dus,
+                        current_ru_cpu_usage_control_val, current_actual_tdp_for_context
+                    )
+                    
+                    self._run_contextual_bandit_optimizer_step(current_efficiency_for_bandit, current_context_vec, significant_throughput_change)
+                    self.last_optimizer_run_time = loop_start_time
+                
+                if loop_start_time - self.last_stats_print_time >= self.stats_print_interval_s:
+                    pkg_pwr_w, pkg_pwr_ok = self._get_pkg_power_w()
+                    ru_usage_str = "N/A"
+                    if self.ru_timing_core_indices:
+                        ru_usage_parts = [f"C{cid}:{self.ru_core_msr_prev_data.get(cid).busy_percent:>6.2f}%" if self.ru_core_msr_prev_data.get(cid) else f"C{cid}:N/A" for cid in self.ru_timing_core_indices]
+                        ru_usage_str = f"[{', '.join(ru_usage_parts)}] (AvgMax:{current_ru_cpu_usage_control_val:>6.2f}%)"
+                    pkg_pwr_log_str = f"{pkg_pwr_w:.1f}" if pkg_pwr_ok else "N/A"
+                    
+                    best_emp_arm, best_emp_eff = self.contextual_bandit.get_best_arm_empirically()
+                    bandit_log = (f"CB(LastSelArm:{self.last_selected_bandit_arm or 'None'}, "
+                                  f"BestEmpArm:{best_emp_arm or 'None'}@AvgEff:{best_emp_eff:.3f})")
+                    
+                    log_parts = [f"RU:{ru_usage_str}", f"TDP_Act:{self.current_tdp_w:>5.1f}W", 
+                                 f"TDP_OptTrg:{self.optimizer_target_tdp_w:>5.1f}W", f"PkgPwr:{pkg_pwr_log_str}W", bandit_log]
+                    if self.most_recent_calculated_efficiency_for_log is not None:
+                         log_parts.append(f"IntEff:{self.most_recent_calculated_efficiency_for_log:.3f}b/uJ")
+                    log_parts.append(f"UEsNow:{self.current_num_ues_for_log}")
+
+                    self._log(INFO, " | ".join(log_parts)); 
+                    self.last_stats_print_time = loop_start_time
+                
+                loop_duration = time.monotonic() - loop_start_time
+                sleep_time = max(0, self.main_loop_sleep_s - loop_duration)
+                if sleep_time > 0 : time.sleep(sleep_time)
+
+        # ... (except KeyboardInterrupt, SystemExit, etc. are THE SAME as LinUCB version) ...
+        except KeyboardInterrupt: self._log(INFO, "\nLoop interrupted (KeyboardInterrupt).")
+        except SystemExit as e: self._log(INFO, f"Application exiting (SystemExit: {e})."); raise 
+        except RuntimeError as e: self._log(ERROR, f"Critical runtime error in loop: {e}."); raise 
+        except Exception as e: self._log(ERROR, f"\nUnexpected error in loop: {e}"); import traceback; self._log(ERROR, traceback.format_exc()); raise 
+        finally: self._log(INFO, "--- Power Manager xApp run_power_management_xApp finished. ---")
+
+    
     def _normalize_feature(self, value: float, feature_key: str) -> float: # Same as before
         params = self.norm_params.get(feature_key)
         if not params:
@@ -884,133 +1013,6 @@ class PowerManager(xAppBase): # Initialization mostly same, KPM part changes
         response = {'response': 'OK', 'status': 200, 'payload': '{}', 'ctype': 'application/json', 'attachment': None, 'mode': 'plain'}
         return response
 
-
-    @xAppBase.start_function
-    def run_power_management_xapp(self): # Main loop structure mostly same
-        # ... (Initializations for TDP, MSR, Energy, SST are THE SAME as the LinUCB version) ...
-        if os.geteuid() != 0 and not self.dry_run:
-            self._log(ERROR, "Must be root for live run. Exiting."); sys.exit(1)
-        
-        try:
-            self.current_tdp_w = self._read_current_tdp_limit_w()
-            self.optimizer_target_tdp_w = self.current_tdp_w
-            self._log(INFO, f"Initial current TDP: {self.current_tdp_w:.1f}W. Optimizer target set to this.")
-
-            if self.ru_timing_core_indices:
-                self._log(INFO, "Priming MSR data..."); self._update_ru_core_msr_data(); time.sleep(0.1); self._update_ru_core_msr_data(); self._log(INFO, "MSR primed.")
-            
-            self.energy_at_last_optimizer_interval_uj = self._read_current_energy_uj()
-            self.last_pkg_energy_uj = self._read_current_energy_uj() 
-            self.last_energy_read_time = time.monotonic()
-            if self.energy_at_last_optimizer_interval_uj is None and not self.dry_run: self._log(WARN, "Could not get initial package energy for optimizer.")
-            
-            self._setup_intel_sst()
-            self._setup_kpm_subscriptions() # This will now attempt Style 4
-
-            now = time.monotonic()
-            self.last_ru_pid_run_time = now
-            self.last_optimizer_run_time = now 
-            self.last_stats_print_time = now
-            # Initialize previous bits for change detection
-            self.total_bits_from_previous_optimizer_interval = 0.0
-
-
-            self._log(INFO, f"\n--- Starting Monitoring & Control Loop ({'DRY RUN' if self.dry_run else 'LIVE RUN'}) ---")
-            self._log(INFO, f"RU PID Interval: {self.ru_timing_pid_interval_s}s | Target RU CPU: {self.target_ru_cpu_usage if self.ru_timing_core_indices else 'N/A'}%")
-            self._log(INFO, f"Contextual Bandit Optimizer Interval: {self.optimizer_decision_interval_s}s | TDP Range: {self.tdp_min_w}W-{self.tdp_max_w}W")
-            self._log(INFO, f"Contextual Bandit Actions (TDP Delta W): {self.bandit_actions}, Alpha: {self.linucb_alpha}, Lambda: {self.linucb_lambda_reg}")
-            self._log(INFO, f"Context Dimension: {self.context_dimension}. Normalization Params (sample for total_bits_per_second): {self.norm_params.get('total_bits_per_second', 'N/A')}")
-            self._log(INFO, f"Stats Print Interval: {self.stats_print_interval_s}s")
-
-            while self.running: # Check self.running flag from xAppBase
-                loop_start_time = time.monotonic()
-
-                if self.ru_timing_core_indices: self._update_ru_core_msr_data()
-                current_ru_cpu_usage_control_val = self._get_control_ru_timing_cpu_usage()
-
-                if loop_start_time - self.last_ru_pid_run_time >= self.ru_timing_pid_interval_s:
-                    if self.ru_timing_core_indices: self._run_ru_timing_pid_step(current_ru_cpu_usage_control_val)
-                    self.last_ru_pid_run_time = loop_start_time
-                
-                if loop_start_time - self.last_optimizer_run_time >= self.optimizer_decision_interval_s:
-                    interval_energy_uj = self._get_interval_energy_uj_for_optimizer()
-                    # Get SUMMED data from Style 4 reports
-                    kpm_data_for_totals = self._get_and_reset_accumulated_kpm_metrics()
-                    current_num_ues = self._get_and_reset_current_ue_count() 
-                    self.current_num_ues_for_log = current_num_ues # For stats log
-
-                    total_bits_optimizer_interval = sum(
-                        d.get('dl_bits', 0.0) + d.get('ul_bits', 0.0)
-                        for d in kpm_data_for_totals.values()
-                    )
-                    num_kpm_reports_processed = sum(d.get('reports_in_interval',0) for d in kpm_data_for_totals.values())
-                    num_active_dus = sum(1 for d in kpm_data_for_totals.values() if d.get('dl_bits',0) + d.get('ul_bits',0) > 0)
-
-                    significant_throughput_change = False
-                    if self.total_bits_from_previous_optimizer_interval is not None: # Check if it's not the very first run
-                        # Avoid division by zero if previous bits was very small or zero.
-                        # Use a small epsilon or check if self.total_bits_from_previous_optimizer_interval is substantial.
-                        denominator = self.total_bits_from_previous_optimizer_interval
-                        if denominator < 1e-6: # If previous bits was effectively zero
-                            if total_bits_optimizer_interval > 1e6 : # And current bits is substantial
-                                significant_throughput_change = True # Consider it a significant ramp-up
-                        elif abs(total_bits_optimizer_interval - denominator) / denominator > self.throughput_change_threshold_for_discard:
-                            relative_change = abs(total_bits_optimizer_interval - denominator) / denominator
-                            self._log(WARN, f"Optimizer: Significant throughput change detected ({relative_change*100:.1f}%). Update for arm {self.last_selected_bandit_arm} might be skipped.")
-                            significant_throughput_change = True
-                    self.total_bits_from_previous_optimizer_interval = total_bits_optimizer_interval
-
-
-                    current_efficiency_for_bandit: Optional[float] = None
-                    if num_kpm_reports_processed > 0 : 
-                        if interval_energy_uj is not None and interval_energy_uj > 1e-3: 
-                            current_efficiency_for_bandit = total_bits_optimizer_interval / interval_energy_uj
-                        elif total_bits_optimizer_interval > 1e-9 and (interval_energy_uj is None or interval_energy_uj <= 1e-3):
-                            current_efficiency_for_bandit = float('inf') 
-                        else: 
-                            current_efficiency_for_bandit = 0.0
-                    
-                    self.most_recent_calculated_efficiency_for_log = current_efficiency_for_bandit
-                    current_actual_tdp_for_context = self.current_tdp_w 
-                    current_context_vec = self._get_current_context_vector(
-                        total_bits_optimizer_interval, current_num_ues, num_active_dus,
-                        current_ru_cpu_usage_control_val, current_actual_tdp_for_context
-                    )
-                    
-                    self._run_contextual_bandit_optimizer_step(current_efficiency_for_bandit, current_context_vec, significant_throughput_change)
-                    self.last_optimizer_run_time = loop_start_time
-                
-                if loop_start_time - self.last_stats_print_time >= self.stats_print_interval_s:
-                    pkg_pwr_w, pkg_pwr_ok = self._get_pkg_power_w()
-                    ru_usage_str = "N/A"
-                    if self.ru_timing_core_indices:
-                        ru_usage_parts = [f"C{cid}:{self.ru_core_msr_prev_data.get(cid).busy_percent:>6.2f}%" if self.ru_core_msr_prev_data.get(cid) else f"C{cid}:N/A" for cid in self.ru_timing_core_indices]
-                        ru_usage_str = f"[{', '.join(ru_usage_parts)}] (AvgMax:{current_ru_cpu_usage_control_val:>6.2f}%)"
-                    pkg_pwr_log_str = f"{pkg_pwr_w:.1f}" if pkg_pwr_ok else "N/A"
-                    
-                    best_emp_arm, best_emp_eff = self.contextual_bandit.get_best_arm_empirically()
-                    bandit_log = (f"CB(LastSelArm:{self.last_selected_bandit_arm or 'None'}, "
-                                  f"BestEmpArm:{best_emp_arm or 'None'}@AvgEff:{best_emp_eff:.3f})")
-                    
-                    log_parts = [f"RU:{ru_usage_str}", f"TDP_Act:{self.current_tdp_w:>5.1f}W", 
-                                 f"TDP_OptTrg:{self.optimizer_target_tdp_w:>5.1f}W", f"PkgPwr:{pkg_pwr_log_str}W", bandit_log]
-                    if self.most_recent_calculated_efficiency_for_log is not None:
-                         log_parts.append(f"IntEff:{self.most_recent_calculated_efficiency_for_log:.3f}b/uJ")
-                    log_parts.append(f"UEsNow:{self.current_num_ues_for_log}")
-
-                    self._log(INFO, " | ".join(log_parts)); 
-                    self.last_stats_print_time = loop_start_time
-                
-                loop_duration = time.monotonic() - loop_start_time
-                sleep_time = max(0, self.main_loop_sleep_s - loop_duration)
-                if sleep_time > 0 : time.sleep(sleep_time)
-
-        # ... (except KeyboardInterrupt, SystemExit, etc. are THE SAME as LinUCB version) ...
-        except KeyboardInterrupt: self._log(INFO, "\nLoop interrupted (KeyboardInterrupt).")
-        except SystemExit as e: self._log(INFO, f"Application exiting (SystemExit: {e})."); raise 
-        except RuntimeError as e: self._log(ERROR, f"Critical runtime error in loop: {e}."); raise 
-        except Exception as e: self._log(ERROR, f"\nUnexpected error in loop: {e}"); import traceback; self._log(ERROR, traceback.format_exc()); raise 
-        finally: self._log(INFO, "--- Power Manager xApp run_power_management_xApp finished. ---")
 
 if __name__ == "__main__": # Same as LinUCB version
     parser = argparse.ArgumentParser(description="EcoRAN Power Manager xApp with Contextual Bandit Optimizer")
