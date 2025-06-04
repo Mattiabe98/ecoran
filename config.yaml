@@ -42,12 +42,32 @@ gnb_ids:
 # ------------------------------------------------------------------------------
 # KPM (Key Performance Metrics) Subscription Settings
 # ------------------------------------------------------------------------------
-# KPM Report Period (ms): How often each gNB should send a KPM report.
-# If you lower this to 1s, set kpm_report_period_ms: 1000
-kpm_report_period_ms: 5000 # Default 5 seconds
-# KPM Granularity Period (ms): The measurement granularity at the gNB.
-# Often same as report_period_ms.
-kpm_granularity_period_ms: 5000 # Default 5 seconds
+kpm_subscriptions:
+  # Metrics to request per UE in Style 4 reports.
+  # We need at least RlcSduTransmittedVolumeDL/UL for total throughput.
+  # Add other metrics if they will be used as context features later (e.g., PRB usage).
+  style4_metrics_per_ue: [
+    "DRB.RlcSduTransmittedVolumeDL",
+    "DRB.RlcSduTransmittedVolumeUL"
+    # "RRU.PRBUsedDL", # Example: If you want to collect PRB per UE
+    # "RRU.PRBUsedUL"  # Example: If you want to collect PRB per UE
+  ]
+
+  # Report Period (ms) for Style 4 KPM reports.
+  style4_report_period_ms: 5000 # e.g., 1 second
+
+  # Granularity Period (ms) for Style 4 KPM reports. Often same as report period.
+  style4_granularity_period_ms: 5000 # e.g., 1 second
+
+  # Matching UE Conditions for Style 4.
+  # This list of conditions determines which UEs are included in the report.
+  # To get ALL UEs, an empty list `[]` might work, or a very permissive dummy condition.
+  # The example from MyXapp uses a dummy rSRP condition.
+  # Consult your E2SM KPM / gNB documentation for the best "match all" condition.
+  # Example: style4_matching_ue_conditions: []  # Try empty list first for "match all"
+  style4_matching_ue_conditions: [ # Default to a dummy condition if empty list doesn't work
+    {'testCondInfo': {'testType': ('ul-rSRP', 'true'), 'testExpr': 'lessthan', 'testValue': ('valueInt', 10000)}}
+  ]
 
 # ------------------------------------------------------------------------------
 # Monitoring, Control Loop Timings & Logging
