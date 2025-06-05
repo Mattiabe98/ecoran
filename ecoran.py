@@ -641,7 +641,8 @@ class PowerManager(xAppBase):
 
         tdp_delta_w = self.bandit_actions.get(actual_selected_arm_key_from_idx, 0.0)
 
-        base_tdp_for_bandit_decision = self.optimizer_target_tdp_w
+        # base_tdp_for_bandit_decision = self.optimizer_target_tdp_w
+        base_tdp_for_bandit_decision = self.current_tdp_w
         proposed_next_tdp_by_bandit = base_tdp_for_bandit_decision + tdp_delta_w
         
         self._log(INFO, f"CB Lib Action: ArmKey='{actual_selected_arm_key_from_idx}', Delta={tdp_delta_w:.1f}W. "
