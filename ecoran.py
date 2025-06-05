@@ -267,13 +267,13 @@ class PowerManager(xAppBase):
             'current_tdp'
         ]
     
-        # The configured self.context_dimension_features_only_features_only should match len(feature_values_ordered)
-        if len(feature_values_ordered) != self.context_dimension_features_only_features_only:
+        # The configured self.context_dimension_features_only should match len(feature_values_ordered)
+        if len(feature_values_ordered) != self.context_dimension_features_only:
             self._log(ERROR, f"Number of actual features ({len(feature_values_ordered)}) "
-                             f"does not match configured context_dimension_features_only_features_only ({self.context_dimension_features_only_features_only}). "
+                             f"does not match configured context_dimension_features_only ({self.context_dimension_features_only}). "
                              "Check feature list and config.")
             # Fallback to avoid crash, but this indicates a config/code mismatch
-            return np.ones(self.context_dimension_features_only_features_only) * 0.5 
+            return np.ones(self.context_dimension_features_only) * 0.5 
     
         normalized_features = np.array([
             self._normalize_feature(val, key) for val, key in zip(feature_values_ordered, feature_keys_ordered)
