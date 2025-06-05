@@ -102,7 +102,7 @@ tdp_range:
 
 # === RU Timing PID Controller Parameters ===
 # Target CPU utilization percentage for the *average of max* of 'ru_timing_cores'.
-target_ru_timing_cpu_usage: 99.8
+target_ru_timing_cpu_usage: 99.5
 
 # Interval (in seconds) at which the RU Timing PID logic runs.
 ru_timing_pid_interval_s: 1.0 # e.g., adjust TDP for RU timing every 1 second
