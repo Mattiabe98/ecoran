@@ -911,7 +911,8 @@ class PowerManager(xAppBase):
             self._log(INFO, f"RU PID Interval: {self.ru_timing_pid_interval_s}s | Target RU CPU: {self.target_ru_cpu_usage if self.ru_timing_core_indices else 'N/A'}%")
             self._log(INFO, f"CB Optimizer Interval: {self.optimizer_decision_interval_s}s | TDP Range: {self.tdp_min_w}W-{self.tdp_max_w}W")
             self._log(INFO, f"CB Actions: {self.bandit_actions}, Alpha: {self.linucb_alpha}")
-            self._log(INFO, f"CB Context Dim (features only): {self.context_dimension_features_only}, FitIntercept: {self.linucb_fit_intercept}. ActiveUE Thresh: {self.active_ue_throughput_threshold_mbps} Mbps.")            self._log(INFO, f"Stats Print Interval: {self.stats_print_interval_s}s")
+            self._log(INFO, f"CB Context Dim (features only): {self.context_dimension_features_only}, FitIntercept: {self.linucb_fit_intercept}. ActiveUE Thresh: {self.active_ue_throughput_threshold_mbps} Mbps.")
+            self._log(INFO, f"Stats Print Interval: {self.stats_print_interval_s}s")
 
             while self.running: 
                 loop_start_time = time.monotonic()
