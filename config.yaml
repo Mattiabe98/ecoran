@@ -57,15 +57,37 @@ kpm_subscriptions:
 contextual_bandit:
   # ... other bandit params
   context_dimension_features_only: 8 
-  alpha: 0.3       # Example: decreased alpha
-  lambda_: 1.5     # Example: increased lambda_
-  fit_intercept: true
-  ucb_from_empty: false # Explicitly set to false
-  beta_prior: "auto"  # Use library's auto calculation or specify ((a,b), n) e.g. ((0.1, 0.1), 3)
-  throughput_change_threshold_for_discard: 1.0
-  active_ue_throughput_threshold_mbps: 1.0
-  idle_tdp_penalty_factor: 2.0
-  idle_decrease_action_bonus: 0.2
+  lambda_: 1.0            # Regularization (default 1.0 for LinTS)
+  fit_intercept: True
+  v_sq: 0.25             # Variance scaling for Thompson Sampling. Smaller = less exploration. Try values like 0.01, 0.05, 0.1, 0.25. Default in lib is 1.0.
+  sample_from: "coef"    # "coef" or "ci"
+  method: "chol"         # "chol" or "sm"
+  beta_prior: "auto"     # "auto", null (None in Python), or specific tuple e.g. [[0.5, 2], 2]
+  smoothing: null        # null (None in Python) or tuple e.g. [1, 20]
+  random_state: 42       # Integer for reproducibility, or null for random
+
+  # --- Idle Reward Logic Configuration ---
+  # idle_reward_scaling_factor: 1.0 # Used by 'closeness_with_bonus' if you keep that.
+  # idle_decrease_action_bonus: 0.2 # Used by 'closeness_with_bonus'
+  # increase_penalty_value: -1.0 # Used by 'closeness_with_bonus' for increase actions
+
+  idle_reward_logic:
+    mode: "strong_min_focus" # Options: "closeness_with_bonus", "strong_min_focus", "original_penalty"
+    # Params for "strong_min_focus"
+    min_tdp_bonus: 1.0           # Reward for being at/achieving min TDP
+    decrease_progress_bonus: 0.3 # Extra bonus for decrease actions not yet at min
+    hold_penalty_factor: 0.7     # How much to penalize holding above min (0 to 1, higher is more penalty)
+    increase_penalty: -1.0       # Penalty for any increase action when idle
+    # Params for "closeness_with_bonus" (if you switch back to it)
+    # scaling_factor: 1.0
+    # decrease_action_bonus: 0.2
+    # increase_penalty_value: -1.0 
+    
+  # --- Rule-Based Idle Descent (Optional) ---
+  enable_rule_based_idle_descent: false # Set to true to enable
+  rule_idle_descent_tdp_thresh_w: 110  # If TDP is above this when idle, rule kicks in
+  rule_idle_descent_step_w: 20         # How much to decrease TDP by
+  rule_idle_descent_max_steps: 3       # Max number of rule steps before bandit takes over again
   
   normalization_parameters:
     # NO 'bias' feature needed here if fit_intercept=true
