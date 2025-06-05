@@ -984,40 +984,44 @@ class PowerManager(xAppBase):
                             significant_throughput_change = True
                     self.total_bits_from_previous_optimizer_interval = total_bits_optimizer_interval
 
-                    is_effectively_idle = current_num_active_ues == 0 and total_bits_optimizer_interval < (self.active_ue_throughput_threshold_mbps * 1e6 * self.optimizer_decision_interval_s / 10) # Idle if no active UEs AND very low total bits
-                    # (the /10 for total_bits is a heuristic to ensure it's truly near zero, not just one UE with tiny data)
+                    is_effectively_idle = current_num_active_ues == 0 and total_bits_optimizer_interval < (self.active_ue_throughput_threshold_mbps * 1e6 * self.optimizer_decision_interval_s / 10.0) 
                     
                     reward_for_bandit = 0.0
                     if is_effectively_idle:
                         idle_penalty_factor = float(self.config.get('contextual_bandit', {}).get('idle_tdp_penalty_factor', 1.0))
-                        # Normalized TDP: 0 at min_tdp, 1 at max_tdp
-                        normalized_tdp_excursion = 0.0
-                        if (self.tdp_max_w - self.tdp_min_w) > 0:
-                            normalized_tdp_excursion = (self.current_tdp_w - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w)
                         
-                        reward_for_bandit = -idle_penalty_factor * max(0, normalized_tdp_excursion) # Max reward 0 at min_tdp, more negative for higher TDP
-                        self._log(INFO, f"CB Reward (Idle): ActualTDP={self.current_tdp_w:.1f}W. Reward={reward_for_bandit:.3f}")
+                        # Calculate how far current TDP is from min TDP, normalized to [0, 1]
+                        # 0 means at tdp_min_w, 1 means at tdp_max_w
+                        normalized_tdp_excursion = 0.0
+                        if (self.tdp_max_w - self.tdp_min_w) > 0: # Avoid division by zero if min=max
+                            normalized_tdp_excursion = (self.current_tdp_w - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w)
+                        normalized_tdp_excursion = max(0.0, min(1.0, normalized_tdp_excursion)) # Clamp to [0,1]
+                    
+                        # Reward is 0 at min_tdp, and -idle_penalty_factor at max_tdp
+                        reward_for_bandit = -idle_penalty_factor * normalized_tdp_excursion 
+                        self._log(INFO, f"CB Reward (Idle): ActualTDP={self.current_tdp_w:.1f}W (Range {self.tdp_min_w}-{self.tdp_max_w}). NormExcursion={normalized_tdp_excursion:.2f}. Reward={reward_for_bandit:.3f}")
                     else: # Active traffic
                         current_raw_efficiency = 0.0
                         if num_kpm_reports_processed > 0 : 
                             if interval_energy_uj is not None and interval_energy_uj > 1e-3: 
                                 current_raw_efficiency = total_bits_optimizer_interval / interval_energy_uj
-                            elif total_bits_optimizer_interval > 1e-9: current_raw_efficiency = float('inf') 
+                            elif total_bits_optimizer_interval > 1e-9: # High bits, negligible energy
+                                current_raw_efficiency = float('inf') 
+                            # else current_raw_efficiency is 0.0 if low bits and low/zero energy
                         
                         norm_eff_params = self.norm_params.get('efficiency_reward', {'min': 0.0, 'max': 5.0}) 
-                        clamped_eff = max(norm_eff_params['min'], min(current_raw_efficiency, norm_eff_params['max']))
+                        clamped_eff = current_raw_efficiency
                         if math.isinf(current_raw_efficiency) and current_raw_efficiency > 0:
-                            clamped_eff = norm_eff_params['max']
-                    
+                            clamped_eff = norm_eff_params['max'] # Give it the best possible efficiency score if inf
+                        elif math.isinf(current_raw_efficiency) and current_raw_efficiency < 0: # Should not happen
+                            clamped_eff = norm_eff_params['min']
+                        
+                        # Clamp before normalization
+                        clamped_eff = max(norm_eff_params['min'], min(clamped_eff, norm_eff_params['max']))
                         normalized_efficiency = self._normalize_feature(clamped_eff, 'efficiency_reward')
                         
-                        # Optional: Add small power penalty during active traffic too, if desired
-                        # avg_power_watts_interval = (interval_energy_uj / 1e6) / self.optimizer_decision_interval_s if interval_energy_uj and self.optimizer_decision_interval_s > 0 else 0
-                        # normalized_power = self._normalize_feature(avg_power_watts_interval, 'package_power')
-                        # reward_for_bandit = normalized_efficiency - (self.reward_weight_power * normalized_power)
-                        reward_for_bandit = normalized_efficiency # Simplest for active: just normalized efficiency
-                    
-                        self._log(INFO, f"CB Reward (Active): RawEff={current_raw_efficiency:.3f} b/uJ, NormEff={normalized_efficiency:.3f}, Reward={reward_for_bandit:.3f}")
+                        reward_for_bandit = normalized_efficiency
+                        self._log(INFO, f"CB Reward (Active): RawEff={current_raw_efficiency:.3f} b/uJ, ClampedEff={clamped_eff:.3f}, NormEff={normalized_efficiency:.3f}, FinalReward={reward_for_bandit:.3f}")
                     
                     self.most_recent_calculated_reward_for_log = reward_for_bandit
                     
