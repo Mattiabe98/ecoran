@@ -773,12 +773,11 @@ class PowerManager(xAppBase):
         if not nodes: self._log(WARN, "No gNB IDs configured for KPM subscriptions."); return
 
         kpm_config = self.config.get('kpm_subscriptions', {})
-        style4_metrics = ["DRB.RlcSduTransmittedVolumeDL"] 
         
-        # style4_metrics = kpm_config.get('style4_metrics_per_ue', [
-        #     'DRB.RlcSduTransmittedVolumeDL', 
-        #     'DRB.RlcSduTransmittedVolumeUL',
-        # ])
+        style4_metrics = kpm_config.get('style4_metrics_per_ue', [
+            'DRB.RlcSduTransmittedVolumeDL', 
+            'DRB.RlcSduTransmittedVolumeUL',
+        ])
         style4_report_p_ms = int(kpm_config.get('style4_report_period_ms', 1000))
         style4_gran_p_ms = int(kpm_config.get('style4_granularity_period_ms', style4_report_p_ms))
         
@@ -817,30 +816,6 @@ class PowerManager(xAppBase):
         if successes > 0: self._log(INFO, f"--- KPM Style 4 Subscriptions: {successes} successful attempts for {len(nodes)} nodes. ---")
         elif nodes: self._log(WARN, "No KPM Style 4 subscriptions successfully initiated.")
         else: self._log(INFO, "--- No KPM nodes to subscribe to. ---")
-
-    def _subscription_response_callback(self, name, path, data, ctype):
-        # This method is inherited from xAppBase and called by its HTTP server
-        # when the Subscription Manager sends a response to our subscription request.
-        # The xAppBase.py provided earlier handles storing the mapping from RIC Subscription ID
-        # to the E2EventInstanceID (which is used in RMR headers).
-        # We just log it here for visibility.
-        try:
-            parsed_data = json.loads(data)
-            subscription_id_ric = parsed_data.get('SubscriptionId') 
-            subscription_instances = parsed_data.get('SubscriptionInstances', [])
-            if subscription_instances:
-                e2_event_instance_id = subscription_instances[0].get("E2EventInstanceId")
-                self._log(INFO,f"Subscription Response CB: RIC_SubID={subscription_id_ric} maps to E2EventInstanceID={e2_event_instance_id}")
-            else:
-                self._log(WARN, f"Subscription Response CB: No SubscriptionInstances found for RIC_SubID={subscription_id_ric}. Data: {data}")
-
-        except Exception as e:
-            self._log(ERROR, f"Error in _subscription_response_callback processing data '{data}': {e}")
-        
-        # Create and return the HTTP response object expected by xAppBase
-        response_payload_str = "{}" # Empty JSON object as payload
-        return {'response': 'OK', 'status': 200, 'payload': response_payload_str, 'ctype': 'application/json', 'attachment': None, 'mode': 'plain'}
-
 
     @xAppBase.start_function
     def run_power_management_xapp(self):
