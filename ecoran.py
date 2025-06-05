@@ -159,7 +159,7 @@ class PowerManager(xAppBase):
             nchoices=len(self.arm_keys_ordered),
             alpha=self.linucb_alpha,
             lambda_=self.linucb_lambda_, # Use lambda_
-            fit_intercept=self.linucb_fit_intercept
+            fit_intercept=self.linucb_fit_intercept)
         self.optimizer_target_tdp_w = self.current_tdp_w
         self.last_selected_arm_index: Optional[int] = None # Library might use index
         self.last_context_vector: Optional[np.array] = None
