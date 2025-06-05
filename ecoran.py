@@ -984,6 +984,8 @@ class PowerManager(xAppBase):
                             significant_throughput_change = True
                     self.total_bits_from_previous_optimizer_interval = total_bits_optimizer_interval
                     
+                    is_effectively_idle = current_num_active_ues == 0 and total_bits_optimizer_interval < (self.active_ue_throughput_threshold_mbps * 1e6 * self.optimizer_decision_interval_s / 10.0) 
+                    
                     if is_effectively_idle:
                         idle_penalty_factor = float(self.config.get('contextual_bandit', {}).get('idle_tdp_penalty_factor', 1.0))
                         # Use a slight bonus for actions that actively decrease TDP towards min during idle
