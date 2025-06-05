@@ -57,9 +57,11 @@ kpm_subscriptions:
 contextual_bandit:
   # ... other bandit params
   context_dimension_features_only: 8 
-  alpha: 1.0
-  lambda_: 0.1 # Regularization for LinUCB from the library
-  fit_intercept: true # Let the library handle the intercept/bias term
+  alpha: 0.5       # Example: decreased alpha
+  lambda_: 1.0     # Example: increased lambda_
+  fit_intercept: true
+  ucb_from_empty: false # Explicitly set to false
+  beta_prior: "auto"  # Use library's auto calculation or specify ((a,b), n) e.g. ((0.1, 0.1), 3)
   throughput_change_threshold_for_discard: 1.0
   active_ue_throughput_threshold_mbps: 1.0
 
