@@ -169,11 +169,10 @@ class PowerManager(xAppBase):
             nchoices=len(self.arm_keys_ordered),
             alpha=self.linucb_alpha,
             lambda_=self.linucb_lambda_,
-            fit_intercept=self.linucb_fit_intercept 
-            # Note: The library's LinUCB does NOT take 'ndim' as a constructor argument.
-            # It infers it. My previous manual LinUCB did.
-            # The `ndim` parameter in some contextualbandits policies is for the *internal representation*
-            # and might be used differently. For LinUCB from this library, we don't pass it at init.
+            fit_intercept=self.linucb_fit_intercept,
+            ucb_from_empty=self.linucb_ucb_from_empty,
+            beta_prior=beta_prior_config # Pass the config value directly
+            # method='sm' is default
         )
         self.optimizer_target_tdp_w = self.current_tdp_w
         self.last_selected_arm_index: Optional[int] = None
