@@ -56,17 +56,23 @@ kpm_subscriptions:
 
 contextual_bandit:
   # ... other bandit params
-  context_dimension: 9 # Bias, TotalBitsNorm, NumUEsNorm, NumActiveDUsNorm, RUCpuNorm, CurrentTDPNorm
+  context_dimension_features_only: 8 
+  alpha: 1.0
+  lambda_: 0.1 # Regularization for LinUCB from the library
+  fit_intercept: true # Let the library handle the intercept/bias term
+  throughput_change_threshold_for_discard: 1.0
+  active_ue_throughput_threshold_mbps: 1.0
+
   normalization_parameters:
-    total_bits_per_second: {'min': 0.0, 'max': 1.0e9} # Example for 1 Gbps
-    num_ues: {'min': 0.0, 'max': 100.0}
-    num_active_dus: {'min': 0.0, 'max': 4.0} # Adjust to your number of DUs
+    # NO 'bias' feature needed here if fit_intercept=true
+    total_bits_dl_per_second: {'min': 0.0, 'max': 1.0e9} # Example: 1 Gbps
+    total_bits_ul_per_second: {'min': 0.0, 'max': 1.0e9} # Example: 1 Gbps
+    prb_total_dl_percentage: {'min': 0.0, 'max': 400.0} # Example: 4 DUs * 100%
+    prb_total_ul_percentage: {'min': 0.0, 'max': 400.0} # Example: 4 DUs * 100%
+    num_active_ues: {'min': 0.0, 'max': 100.0}
+    num_active_dus: {'min': 0.0, 'max': 4.0} # Set to actual number of DUs
     ru_cpu_usage: {'min': 80.0, 'max': 100.0}
-    current_tdp: {'min': 90.0, 'max': 170.0} # Should match tdp_range from elsewhere
-    total_bits_dl_per_second: {'min': 0, 'max': 1.0e9}
-    total_bits_ul_per_second: {'min': 0, 'max': 1.0e9}
-    prb_total_dl_percentage: {'min': 0, 'max': 100}
-    prb_total_ul_percentage: {'min': 0, 'max': 100}
+    current_tdp: {'min': 90.0, 'max': 170.0} # Should match tdp_range
 
 # ------------------------------------------------------------------------------
 # Monitoring, Control Loop Timings & Logging
