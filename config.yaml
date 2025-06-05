@@ -72,16 +72,16 @@ contextual_bandit:
   # increase_penalty_value: -1.0 # Used by 'closeness_with_bonus' for increase actions
 
   idle_reward_logic:
-    mode: "strong_min_focus" # Options: "closeness_with_bonus", "strong_min_focus", "original_penalty"
+    mode: "closeness_with_bonus" # Options: "closeness_with_bonus", "strong_min_focus", "original_penalty"
     # Params for "strong_min_focus"
     min_tdp_bonus: 1.0           # Reward for being at/achieving min TDP
     decrease_progress_bonus: 0.3 # Extra bonus for decrease actions not yet at min
     hold_penalty_factor: 0.7     # How much to penalize holding above min (0 to 1, higher is more penalty)
     increase_penalty: -1.0       # Penalty for any increase action when idle
     # Params for "closeness_with_bonus" (if you switch back to it)
-    # scaling_factor: 1.0
-    # decrease_action_bonus: 0.2
-    # increase_penalty_value: -1.0 
+    scaling_factor: 0.5
+    decrease_action_bonus: 0.2
+    increase_penalty_value: -1.0 
     
   # --- Rule-Based Idle Descent (Optional) ---
   enable_rule_based_idle_descent: false # Set to true to enable
@@ -95,7 +95,7 @@ contextual_bandit:
     total_bits_ul_per_second: {'min': 0.0, 'max': 1.0e9} # Example: 1 Gbps
     prb_total_dl_percentage: {'min': 0.0, 'max': 400.0} # Example: 4 DUs * 100%
     prb_total_ul_percentage: {'min': 0.0, 'max': 400.0} # Example: 4 DUs * 100%
-    num_active_ues: {'min': 0.0, 'max': 100.0}
+    num_active_ues: {'min': 0.0, 'max': 5.0}
     num_active_dus: {'min': 0.0, 'max': 4.0} # Set to actual number of DUs
     ru_cpu_usage: {'min': 80.0, 'max': 100.0}
     current_tdp: {'min': 90.0, 'max': 170.0} # Should match tdp_range
