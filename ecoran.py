@@ -988,18 +988,46 @@ class PowerManager(xAppBase):
                     
                     reward_for_bandit = 0.0
                     if is_effectively_idle:
-                        idle_penalty_factor = float(self.config.get('contextual_bandit', {}).get('idle_tdp_penalty_factor', 1.0))
+                        # --- START NEW IDLE REWARD LOGIC ---
+                        idle_reward_scale = float(self.config.get('contextual_bandit', {}).get('idle_reward_scaling_factor', 1.0))
+                        decrease_bonus = float(self.config.get('contextual_bandit', {}).get('idle_decrease_action_bonus', 0.1))
                         
-                        # Calculate how far current TDP is from min TDP, normalized to [0, 1]
-                        # 0 means at tdp_min_w, 1 means at tdp_max_w
                         normalized_tdp_excursion = 0.0
-                        if (self.tdp_max_w - self.tdp_min_w) > 0: # Avoid division by zero if min=max
+                        if (self.tdp_max_w - self.tdp_min_w) > 0.01: # Avoid division by zero if min ~== max
                             normalized_tdp_excursion = (self.current_tdp_w - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w)
                         normalized_tdp_excursion = max(0.0, min(1.0, normalized_tdp_excursion)) # Clamp to [0,1]
-                    
-                        # Reward is 0 at min_tdp, and -idle_penalty_factor at max_tdp
-                        reward_for_bandit = -idle_penalty_factor * normalized_tdp_excursion 
-                        self._log(INFO, f"CB Reward (Idle): ActualTDP={self.current_tdp_w:.1f}W (Range {self.tdp_min_w}-{self.tdp_max_w}). NormExcursion={normalized_tdp_excursion:.2f}. Reward={reward_for_bandit:.3f}")
+
+                        closeness_to_min_tdp = 1.0 - normalized_tdp_excursion
+
+                        action_description_for_log = "PrevActionN/A" # For logging
+
+                        if self.last_selected_arm_index is not None and \
+                           self.last_selected_arm_index < len(self.arm_keys_ordered) and \
+                           self.arm_keys_ordered: # Ensure arm_keys_ordered is not empty
+                            
+                            chosen_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
+                            action_delta_w = self.bandit_actions.get(chosen_arm_key, 0.0)
+
+                            action_description_for_log = f"PrevArm:{chosen_arm_key}({action_delta_w:+.0f}W)"
+
+                            if action_delta_w > 0: # Increase action
+                                reward_for_bandit = -1.0 * idle_reward_scale
+                            elif action_delta_w == 0: # Hold action
+                                reward_for_bandit = closeness_to_min_tdp * idle_reward_scale
+                            else: # Decrease action (action_delta_w < 0)
+                                reward_for_bandit = (closeness_to_min_tdp + decrease_bonus) * idle_reward_scale
+                                reward_for_bandit = min(reward_for_bandit, 1.0 * idle_reward_scale) # Cap
+                        else:
+                            # Fallback if no valid previous action (e.g., first optimizer step)
+                            # Bandit update is skipped anyway in this case by _run_contextual_bandit_optimizer_step
+                            # For logging consistency, use a neutral or old-style penalty.
+                            reward_for_bandit = -1.0 * normalized_tdp_excursion * idle_reward_scale 
+                            action_description_for_log = "PrevActionUnknown"
+                        
+                        self._log(INFO, f"CB Reward (Idle): For {action_description_for_log} -> ActualTDP={self.current_tdp_w:.1f}W "
+                                         f"(NormExcur={normalized_tdp_excursion:.2f}, CloseToMin={closeness_to_min_tdp:.2f}). "
+                                         f"Reward={reward_for_bandit:.3f}")
+                        # --- END NEW IDLE REWARD LOGIC ---
                     else: # Active traffic
                         current_raw_efficiency = 0.0
                         if num_kpm_reports_processed > 0 : 
