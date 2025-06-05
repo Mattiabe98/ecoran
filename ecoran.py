@@ -538,120 +538,120 @@ class PowerManager(xAppBase):
                    f"Error {error:.2f}%, TDP Change {tdp_change_w:.1f}W")
             self._set_tdp_limit_w(new_target_tdp, context=ctx)
 
-def _run_contextual_bandit_optimizer_step(self, current_efficiency_bits_per_uj: Optional[float],
-                                             current_context_vector: Optional[np.array],
-                                             significant_throughput_change: bool):
-        # 1. Update bandit with the reward from the PREVIOUS action (if any valid data)
-        if self.last_selected_arm_index is not None and self.last_context_vector is not None:
-            if significant_throughput_change:
-                self._log(WARN, f"CB Lib: Skipping update for arm_idx '{self.last_selected_arm_index}' due to sig. throughput change.")
-            elif current_efficiency_bits_per_uj is not None and math.isfinite(current_efficiency_bits_per_uj) and not math.isnan(current_efficiency_bits_per_uj):
-                try:
-                    X_update = self.last_context_vector.reshape(1, -1)
-                    action_update = np.array([self.last_selected_arm_index], dtype=int) # Ensure dtype is int
-                    reward_update = np.array([current_efficiency_bits_per_uj])
-
-                    self.contextual_bandit_model.fit(X_update, action_update, reward_update)
-                    
-                    last_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
-                    self._log(INFO, f"CB Lib: Updated ArmIdx '{self.last_selected_arm_index}' (Key: {last_arm_key}) with reward {current_efficiency_bits_per_uj:.3f}.")
-                except Exception as e:
-                    self._log.error(f"CB Lib: Error during model fit/update: {e}")
-            else:
-                self._log(WARN, f"CB Lib: Invalid efficiency ({current_efficiency_bits_per_uj}) for arm_idx '{self.last_selected_arm_index}'. Skipping update.")
-        
-        # 2. Select new arm
-        selected_arm_index = 0  # Default to first arm if errors occur
-        selected_arm_key_log = self.arm_keys_ordered[0] if self.arm_keys_ordered else "N/A_NO_ARMS"
-        scores_for_logging_str = "N/A_SCORES" # Default for logging string
-
-        if current_context_vector is None:
-            self._log(WARN, "CB Lib: Current context vector is None. Defaulting to 'hold' arm or first arm.")
-            selected_arm_key_default = "hold"
-            if "hold" not in self.arm_keys_ordered and self.arm_keys_ordered:
-                selected_arm_key_default = self.arm_keys_ordered[0]
-            elif not self.arm_keys_ordered: # Should not happen
-                 selected_arm_key_default = "N/A_NO_ARMS" # Error state
+    def _run_contextual_bandit_optimizer_step(self, current_efficiency_bits_per_uj: Optional[float],
+                                                 current_context_vector: Optional[np.array],
+                                                 significant_throughput_change: bool):
+            # 1. Update bandit with the reward from the PREVIOUS action (if any valid data)
+            if self.last_selected_arm_index is not None and self.last_context_vector is not None:
+                if significant_throughput_change:
+                    self._log(WARN, f"CB Lib: Skipping update for arm_idx '{self.last_selected_arm_index}' due to sig. throughput change.")
+                elif current_efficiency_bits_per_uj is not None and math.isfinite(current_efficiency_bits_per_uj) and not math.isnan(current_efficiency_bits_per_uj):
+                    try:
+                        X_update = self.last_context_vector.reshape(1, -1)
+                        action_update = np.array([self.last_selected_arm_index], dtype=int) # Ensure dtype is int
+                        reward_update = np.array([current_efficiency_bits_per_uj])
+    
+                        self.contextual_bandit_model.fit(X_update, action_update, reward_update)
+                        
+                        last_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
+                        self._log(INFO, f"CB Lib: Updated ArmIdx '{self.last_selected_arm_index}' (Key: {last_arm_key}) with reward {current_efficiency_bits_per_uj:.3f}.")
+                    except Exception as e:
+                        self._log.error(f"CB Lib: Error during model fit/update: {e}")
+                else:
+                    self._log(WARN, f"CB Lib: Invalid efficiency ({current_efficiency_bits_per_uj}) for arm_idx '{self.last_selected_arm_index}'. Skipping update.")
             
-            if self.arm_keys_ordered and selected_arm_key_default != "N/A_NO_ARMS" and selected_arm_key_default in self.arm_keys_ordered :
-                 selected_arm_index = self.arm_keys_ordered.index(selected_arm_key_default)
-            # If arm_keys_ordered is empty, selected_arm_index remains 0, selected_arm_key_log will be N/A_NO_ARMS
-            selected_arm_key_log = selected_arm_key_default 
-            scores_for_logging_str = "[Defaulted due to None context]"
-        else:
-            try:
-                # decision_function(X) should return array of shape (n_samples, n_choices)
-                raw_scores_output = self.contextual_bandit_model.decision_function(current_context_vector.reshape(1, -1))
+            # 2. Select new arm
+            selected_arm_index = 0  # Default to first arm if errors occur
+            selected_arm_key_log = self.arm_keys_ordered[0] if self.arm_keys_ordered else "N/A_NO_ARMS"
+            scores_for_logging_str = "N/A_SCORES" # Default for logging string
+    
+            if current_context_vector is None:
+                self._log(WARN, "CB Lib: Current context vector is None. Defaulting to 'hold' arm or first arm.")
+                selected_arm_key_default = "hold"
+                if "hold" not in self.arm_keys_ordered and self.arm_keys_ordered:
+                    selected_arm_key_default = self.arm_keys_ordered[0]
+                elif not self.arm_keys_ordered: # Should not happen
+                     selected_arm_key_default = "N/A_NO_ARMS" # Error state
                 
-                self._log(DEBUG_ALL, f"CB Lib: Raw decision_function output: {raw_scores_output}, type: {type(raw_scores_output)}")
-                if isinstance(raw_scores_output, np.ndarray):
-                    self._log(DEBUG_ALL, f"CB Lib: Raw scores shape: {raw_scores_output.shape}")
-
-                if isinstance(raw_scores_output, np.ndarray) and raw_scores_output.ndim == 2 and raw_scores_output.shape[0] == 1:
-                    actual_scores_array = raw_scores_output[0] # This should be a 1D array of scores
-                    if actual_scores_array.size == len(self.arm_keys_ordered):
-                        selected_arm_index = np.argmax(actual_scores_array)
-                        selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
-                        # Construct the string of scores for logging
-                        scores_for_logging_str = ", ".join([
-                            f"{self.arm_keys_ordered[i]}:{s:.3f}" 
-                            for i, s in enumerate(actual_scores_array) 
-                            if i < len(self.arm_keys_ordered) # Defensive check
-                        ])
-                    else:
-                        self._log(ERROR, f"CB Lib: Scores array size {actual_scores_array.size} != nchoices {len(self.arm_keys_ordered)}. Defaulting arm.")
+                if self.arm_keys_ordered and selected_arm_key_default != "N/A_NO_ARMS" and selected_arm_key_default in self.arm_keys_ordered :
+                     selected_arm_index = self.arm_keys_ordered.index(selected_arm_key_default)
+                # If arm_keys_ordered is empty, selected_arm_index remains 0, selected_arm_key_log will be N/A_NO_ARMS
+                selected_arm_key_log = selected_arm_key_default 
+                scores_for_logging_str = "[Defaulted due to None context]"
+            else:
+                try:
+                    # decision_function(X) should return array of shape (n_samples, n_choices)
+                    raw_scores_output = self.contextual_bandit_model.decision_function(current_context_vector.reshape(1, -1))
+                    
+                    self._log(DEBUG_ALL, f"CB Lib: Raw decision_function output: {raw_scores_output}, type: {type(raw_scores_output)}")
+                    if isinstance(raw_scores_output, np.ndarray):
+                        self._log(DEBUG_ALL, f"CB Lib: Raw scores shape: {raw_scores_output.shape}")
+    
+                    if isinstance(raw_scores_output, np.ndarray) and raw_scores_output.ndim == 2 and raw_scores_output.shape[0] == 1:
+                        actual_scores_array = raw_scores_output[0] # This should be a 1D array of scores
+                        if actual_scores_array.size == len(self.arm_keys_ordered):
+                            selected_arm_index = np.argmax(actual_scores_array)
+                            selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
+                            # Construct the string of scores for logging
+                            scores_for_logging_str = ", ".join([
+                                f"{self.arm_keys_ordered[i]}:{s:.3f}" 
+                                for i, s in enumerate(actual_scores_array) 
+                                if i < len(self.arm_keys_ordered) # Defensive check
+                            ])
+                        else:
+                            self._log(ERROR, f"CB Lib: Scores array size {actual_scores_array.size} != nchoices {len(self.arm_keys_ordered)}. Defaulting arm.")
+                            if self.arm_keys_ordered: selected_arm_index = random.choice(range(len(self.arm_keys_ordered)))
+                            if self.arm_keys_ordered: selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
+                            scores_for_logging_str = "[Error: Score size mismatch]"
+                    # This elif handles if predict() was used and returned an index, or if decision_function returns something scalar
+                    elif isinstance(raw_scores_output, (np.int64, int, float, np.integer, np.floating)): 
+                        self._log(WARN, f"CB Lib: decision_function returned a single value ({raw_scores_output}), not a score array. Assuming it's the chosen index.")
+                        if self.arm_keys_ordered and 0 <= int(raw_scores_output) < len(self.arm_keys_ordered):
+                            selected_arm_index = int(raw_scores_output)
+                            selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
+                            scores_for_logging_str = f"[Returned Index Directly: {selected_arm_index}]"
+                        else:
+                            self._log(ERROR, f"CB Lib: Returned single index {raw_scores_output} out of bounds. Defaulting arm.")
+                            if self.arm_keys_ordered: selected_arm_index = random.choice(range(len(self.arm_keys_ordered)))
+                            if self.arm_keys_ordered: selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
+                            scores_for_logging_str = "[Error: Index out of bounds]"
+                    else: # Fallback for other unexpected formats
+                        self._log(ERROR, f"CB Lib: Unexpected scores format from decision_function. Type: {type(raw_scores_output)}, Value: {raw_scores_output}. Defaulting arm.")
                         if self.arm_keys_ordered: selected_arm_index = random.choice(range(len(self.arm_keys_ordered)))
                         if self.arm_keys_ordered: selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
-                        scores_for_logging_str = "[Error: Score size mismatch]"
-                # This elif handles if predict() was used and returned an index, or if decision_function returns something scalar
-                elif isinstance(raw_scores_output, (np.int64, int, float, np.integer, np.floating)): 
-                    self._log(WARN, f"CB Lib: decision_function returned a single value ({raw_scores_output}), not a score array. Assuming it's the chosen index.")
-                    if self.arm_keys_ordered and 0 <= int(raw_scores_output) < len(self.arm_keys_ordered):
-                        selected_arm_index = int(raw_scores_output)
-                        selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
-                        scores_for_logging_str = f"[Returned Index Directly: {selected_arm_index}]"
-                    else:
-                        self._log(ERROR, f"CB Lib: Returned single index {raw_scores_output} out of bounds. Defaulting arm.")
-                        if self.arm_keys_ordered: selected_arm_index = random.choice(range(len(self.arm_keys_ordered)))
-                        if self.arm_keys_ordered: selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
-                        scores_for_logging_str = "[Error: Index out of bounds]"
-                else: # Fallback for other unexpected formats
-                    self._log(ERROR, f"CB Lib: Unexpected scores format from decision_function. Type: {type(raw_scores_output)}, Value: {raw_scores_output}. Defaulting arm.")
+                        scores_for_logging_str = "[Error: Unexpected scores format]"
+    
+                except Exception as e:
+                    self._log.error(f"CB Lib: Error during arm selection (decision_function or processing): {e}. Defaulting to random arm.")
                     if self.arm_keys_ordered: selected_arm_index = random.choice(range(len(self.arm_keys_ordered)))
                     if self.arm_keys_ordered: selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
-                    scores_for_logging_str = "[Error: Unexpected scores format]"
-
-            except Exception as e:
-                self._log.error(f"CB Lib: Error during arm selection (decision_function or processing): {e}. Defaulting to random arm.")
-                if self.arm_keys_ordered: selected_arm_index = random.choice(range(len(self.arm_keys_ordered)))
-                if self.arm_keys_ordered: selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
-                scores_for_logging_str = "[Error: Exception in arm selection]"
-        
-        # Use the processed scores_for_logging_str for the log message
-        self._log(INFO, f"CB Lib: Selected ArmIdx '{selected_arm_index}' (Key: {selected_arm_key_log}). Scores: [{scores_for_logging_str}]") # THIS IS THE CORRECTED LOGGING LINE
-        
-        self.last_selected_arm_index = selected_arm_index
-        self.last_context_vector = current_context_vector
-
-        actual_selected_arm_key_from_idx = self.arm_keys_ordered[selected_arm_index] if self.arm_keys_ordered and selected_arm_index < len(self.arm_keys_ordered) else "hold" 
-        if actual_selected_arm_key_from_idx not in self.bandit_actions: 
-            self._log(WARN, f"Selected arm key '{actual_selected_arm_key_from_idx}' not in bandit_actions. Defaulting to 'hold'.")
-            actual_selected_arm_key_from_idx = "hold" if "hold" in self.bandit_actions else (self.arm_keys_ordered[0] if self.arm_keys_ordered else "error_no_arm")
-
-
-        tdp_delta_w = self.bandit_actions.get(actual_selected_arm_key_from_idx, 0.0)
-
-        base_tdp_for_bandit_decision = self.optimizer_target_tdp_w
-        proposed_next_tdp_by_bandit = base_tdp_for_bandit_decision + tdp_delta_w
-        
-        self._log(INFO, f"CB Lib Action: ArmKey='{actual_selected_arm_key_from_idx}', Delta={tdp_delta_w:.1f}W. "
-                        f"Base TDP: {base_tdp_for_bandit_decision:.1f}W. "
-                        f"Proposed TDP: {proposed_next_tdp_by_bandit:.1f}W.")
-        if current_context_vector is not None:
-             self._log(DEBUG_ALL, f"CB Lib Context: {['{:.2f}'.format(x) for x in current_context_vector]}")
-
-        self._set_tdp_limit_w(proposed_next_tdp_by_bandit, context=f"Optimizer CB Lib (Arm: {actual_selected_arm_key_from_idx})")
-        self.optimizer_target_tdp_w = self._read_current_tdp_limit_w()
+                    scores_for_logging_str = "[Error: Exception in arm selection]"
+            
+            # Use the processed scores_for_logging_str for the log message
+            self._log(INFO, f"CB Lib: Selected ArmIdx '{selected_arm_index}' (Key: {selected_arm_key_log}). Scores: [{scores_for_logging_str}]") # THIS IS THE CORRECTED LOGGING LINE
+            
+            self.last_selected_arm_index = selected_arm_index
+            self.last_context_vector = current_context_vector
+    
+            actual_selected_arm_key_from_idx = self.arm_keys_ordered[selected_arm_index] if self.arm_keys_ordered and selected_arm_index < len(self.arm_keys_ordered) else "hold" 
+            if actual_selected_arm_key_from_idx not in self.bandit_actions: 
+                self._log(WARN, f"Selected arm key '{actual_selected_arm_key_from_idx}' not in bandit_actions. Defaulting to 'hold'.")
+                actual_selected_arm_key_from_idx = "hold" if "hold" in self.bandit_actions else (self.arm_keys_ordered[0] if self.arm_keys_ordered else "error_no_arm")
+    
+    
+            tdp_delta_w = self.bandit_actions.get(actual_selected_arm_key_from_idx, 0.0)
+    
+            base_tdp_for_bandit_decision = self.optimizer_target_tdp_w
+            proposed_next_tdp_by_bandit = base_tdp_for_bandit_decision + tdp_delta_w
+            
+            self._log(INFO, f"CB Lib Action: ArmKey='{actual_selected_arm_key_from_idx}', Delta={tdp_delta_w:.1f}W. "
+                            f"Base TDP: {base_tdp_for_bandit_decision:.1f}W. "
+                            f"Proposed TDP: {proposed_next_tdp_by_bandit:.1f}W.")
+            if current_context_vector is not None:
+                 self._log(DEBUG_ALL, f"CB Lib Context: {['{:.2f}'.format(x) for x in current_context_vector]}")
+    
+            self._set_tdp_limit_w(proposed_next_tdp_by_bandit, context=f"Optimizer CB Lib (Arm: {actual_selected_arm_key_from_idx})")
+            self.optimizer_target_tdp_w = self._read_current_tdp_limit_w()
 
 
     def _get_pkg_power_w(self) -> Tuple[float, bool]:
