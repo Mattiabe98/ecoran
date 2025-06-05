@@ -661,7 +661,7 @@ class PowerManager(xAppBase):
 
         tdp_delta_w = self.bandit_actions.get(actual_selected_arm_key_from_idx, 0.0)
 
-        #base_tdp_for_bandit_decision = self.optimizer_target_tdp_w
+        # base_tdp_for_bandit_decision = self.optimizer_target_tdp_w
         base_tdp_for_bandit_decision = self.current_tdp_w
         proposed_next_tdp_by_bandit = base_tdp_for_bandit_decision + tdp_delta_w
         
@@ -983,46 +983,52 @@ class PowerManager(xAppBase):
                             self._log(WARN, f"Optimizer: Sig. throughput change ({relative_change*100:.1f}%). Update might be skipped.")
                             significant_throughput_change = True
                     self.total_bits_from_previous_optimizer_interval = total_bits_optimizer_interval
-                    
+
                     is_effectively_idle = current_num_active_ues == 0 and total_bits_optimizer_interval < (self.active_ue_throughput_threshold_mbps * 1e6 * self.optimizer_decision_interval_s / 10.0) 
                     
+                    reward_for_bandit = 0.0
                     if is_effectively_idle:
-                        idle_penalty_factor = float(self.config.get('contextual_bandit', {}).get('idle_tdp_penalty_factor', 1.0))
-                        # Use a slight bonus for actions that actively decrease TDP towards min during idle
-                        decrease_action_bonus_idle = float(self.config.get('contextual_bandit', {}).get('idle_decrease_action_bonus', 0.1)) 
-    
-                        # The TDP to evaluate for the reward is the one that was *targeted* or *resulted* from the PREVIOUS action.
-                        # self.optimizer_target_tdp_w holds the TDP set by the *previous* CB action (after clamping).
-                        # This is the TDP level the CB was "testing" for this reward cycle.
-                        tdp_level_being_evaluated = self.optimizer_target_tdp_w
-                        # Note: PID might have changed self.current_tdp_w since then.
-                        # For idle, the PID should be trying to pull it down if it's high and RU CPU is low.
-                        # So, self.current_tdp_w at the moment of reward calculation might be lower.
-                        # Using tdp_level_being_evaluated (the CB's choice) makes the reward more directly tied to CB's action.
-    
+                        # --- START NEW IDLE REWARD LOGIC ---
+                        idle_reward_scale = float(self.config.get('contextual_bandit', {}).get('idle_reward_scaling_factor', 1.0))
+                        decrease_bonus = float(self.config.get('contextual_bandit', {}).get('idle_decrease_action_bonus', 0.1))
+                        
                         normalized_tdp_excursion = 0.0
-                        if (self.tdp_max_w - self.tdp_min_w) > 0.01:
-                            normalized_tdp_excursion = (tdp_level_being_evaluated - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w)
-                        normalized_tdp_excursion = max(0.0, min(1.0, normalized_tdp_excursion))
-    
-                        # Base reward: 0 at min TDP, -factor at max TDP.
-                        reward_for_bandit = -idle_penalty_factor * normalized_tdp_excursion
-    
-                        # Add a small bonus if the *action taken* was a decrease, encouraging it more.
-                        action_description_for_log = "PrevActionN/A"
+                        if (self.tdp_max_w - self.tdp_min_w) > 0.01: # Avoid division by zero if min ~== max
+                            normalized_tdp_excursion = (self.current_tdp_w - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w)
+                        normalized_tdp_excursion = max(0.0, min(1.0, normalized_tdp_excursion)) # Clamp to [0,1]
+
+                        closeness_to_min_tdp = 1.0 - normalized_tdp_excursion
+
+                        action_description_for_log = "PrevActionN/A" # For logging
+
                         if self.last_selected_arm_index is not None and \
                            self.last_selected_arm_index < len(self.arm_keys_ordered) and \
-                           self.arm_keys_ordered:
+                           self.arm_keys_ordered: # Ensure arm_keys_ordered is not empty
+                            
                             chosen_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
                             action_delta_w = self.bandit_actions.get(chosen_arm_key, 0.0)
+
                             action_description_for_log = f"PrevArm:{chosen_arm_key}({action_delta_w:+.0f}W)"
-                            if action_delta_w < 0: # If it was a decrease action
-                                reward_for_bandit += decrease_action_bonus_idle
-                                reward_for_bandit = min(reward_for_bandit, 0.0) # Ensure reward doesn't become too positive from bonus alone if already at min_tdp
+
+                            if action_delta_w > 0: # Increase action
+                                reward_for_bandit = -1.0 * idle_reward_scale
+                            elif action_delta_w == 0: # Hold action
+                                reward_for_bandit = closeness_to_min_tdp * idle_reward_scale
+                            else: # Decrease action (action_delta_w < 0)
+                                reward_for_bandit = (closeness_to_min_tdp + decrease_bonus) * idle_reward_scale
+                                reward_for_bandit = min(reward_for_bandit, 1.0 * idle_reward_scale) # Cap
+                        else:
+                            # Fallback if no valid previous action (e.g., first optimizer step)
+                            # Bandit update is skipped anyway in this case by _run_contextual_bandit_optimizer_step
+                            # For logging consistency, use a neutral or old-style penalty.
+                            reward_for_bandit = -1.0 * normalized_tdp_excursion * idle_reward_scale 
+                            action_description_for_log = "PrevActionUnknown"
                         
-                        self._log(INFO, f"CB Reward (Idle): {action_description_for_log} -> TargetTDP={tdp_level_being_evaluated:.1f}W. "
-                                         f"NormExcursion={normalized_tdp_excursion:.2f}. Reward={reward_for_bandit:.3f}")
-                    else: 
+                        self._log(INFO, f"CB Reward (Idle): For {action_description_for_log} -> ActualTDP={self.current_tdp_w:.1f}W "
+                                         f"(NormExcur={normalized_tdp_excursion:.2f}, CloseToMin={closeness_to_min_tdp:.2f}). "
+                                         f"Reward={reward_for_bandit:.3f}")
+                        # --- END NEW IDLE REWARD LOGIC ---
+                    else: # Active traffic
                         current_raw_efficiency = 0.0
                         if num_kpm_reports_processed > 0 : 
                             if interval_energy_uj is not None and interval_energy_uj > 1e-3: 
