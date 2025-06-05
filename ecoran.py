@@ -17,9 +17,9 @@ import json
 
 # Attempt to import contextualbandits library
 try:
-    from contextualbandits.linucb import LinUCB
+    from contextualbandits.online import LinUCB # Correct import path
 except ImportError:
-    print("E: Failed to import LinUCB from contextualbandits. Please install the library: pip install contextualbandits")
+    print("E: Failed to import LinUCB from contextualbandits.online. Please install the library: pip install contextualbandits")
     sys.exit(1)
 
 try:
@@ -150,20 +150,16 @@ class PowerManager(xAppBase):
             self.bandit_actions["hold"] = 0.0
             if "hold" not in self.arm_keys_ordered: self.arm_keys_ordered.append("hold")
         
-        self.context_dimension = int(cb_config.get('context_dimension', 9)) # Bias + 8 features
-        self.linucb_alpha = float(cb_config.get('alpha', 1.0)) # Exploration factor for LinUCB
-
-        # Instantiate LinUCB from the library
-        # nchoices = number of arms, ndim = context dimension (excluding bias if library handles it, or including if not)
-        # The library's LinUCB usually expects context WITHOUT explicit bias, it might add it internally or assume no bias.
-        # Let's check its documentation. Often, if it doesn't add bias, we add it to our context vector.
-        # For now, assuming our context_dimension INCLUDES the bias term we add.
-        self.contextual_bandit_model = LinUCB(nchoices=len(self.arm_keys_ordered),
-                                              ndim=self.context_dimension,
-                                              alpha=self.linucb_alpha,
-                                              # lambda_ = regularization, beta_prior = related to initial variance if using specific priors
-                                              # Check library for exact parameter names (e.g., lambda_ or reg_lambda)
-                                              ) # Add other params like lambda if available in lib's constructor
+        self.context_dimension_features_only = int(cb_config.get('context_dimension_features_only', 8)) # e.g., 8 actual features
+        self.linucb_alpha = float(cb_config.get('alpha', 1.0))
+        self.linucb_lambda_ = float(cb_config.get('lambda_reg', 0.1)) # Renamed to match library param
+        self.linucb_fit_intercept = bool(cb_config.get('fit_intercept', True)) # Let library handle intercept
+    
+        self.contextual_bandit_model = LinUCB(
+            nchoices=len(self.arm_keys_ordered),
+            alpha=self.linucb_alpha,
+            lambda_=self.linucb_lambda_, # Use lambda_
+            fit_intercept=self.linucb_fit_intercept
         self.optimizer_target_tdp_w = self.current_tdp_w
         self.last_selected_arm_index: Optional[int] = None # Library might use index
         self.last_context_vector: Optional[np.array] = None
@@ -216,7 +212,8 @@ class PowerManager(xAppBase):
             return 0.5 if value == val_min else (0.0 if value < val_min else 1.0)
         normalized = (value - val_min) / (val_max - val_min)
         return max(0.0, min(1.0, normalized)) 
-
+    
+    
     def _get_current_context_vector(self,
                                    current_total_bits_dl_interval: float,
                                    current_total_bits_ul_interval: float,
@@ -229,14 +226,13 @@ class PowerManager(xAppBase):
         
         interval_s = self.optimizer_decision_interval_s
         if interval_s <=0: interval_s = 1.0 
-
+    
         bits_dl_ps = current_total_bits_dl_interval / interval_s if interval_s > 0 else 0.0
         bits_ul_ps = current_total_bits_ul_interval / interval_s if interval_s > 0 else 0.0
-
-        # The order of features here MUST match the expected input order for the model
-        # and the configured context_dimension.
+    
+        # Order of features must be consistent
+        # NO explicit bias term if LinUCB's fit_intercept=True
         feature_values_ordered = [
-            1.0, # Bias
             bits_dl_ps,
             bits_ul_ps,
             current_prb_dl_total_percentage,
@@ -247,7 +243,6 @@ class PowerManager(xAppBase):
             current_actual_tdp
         ]
         feature_keys_ordered = [
-            'bias',
             'total_bits_dl_per_second',
             'total_bits_ul_per_second',
             'prb_total_dl_percentage',
@@ -257,12 +252,15 @@ class PowerManager(xAppBase):
             'ru_cpu_usage',
             'current_tdp'
         ]
-
-        if len(feature_values_ordered) != self.context_dimension:
-            self._log(ERROR, f"Number of features ({len(feature_values_ordered)}) does not match context_dimension ({self.context_dimension}). Check feature list and config.")
+    
+        # The configured self.context_dimension_features_only should match len(feature_values_ordered)
+        if len(feature_values_ordered) != self.context_dimension_features_only:
+            self._log(ERROR, f"Number of actual features ({len(feature_values_ordered)}) "
+                             f"does not match configured context_dimension_features_only ({self.context_dimension_features_only}). "
+                             "Check feature list and config.")
             # Fallback to avoid crash, but this indicates a config/code mismatch
-            return np.ones(self.context_dimension) * 0.5 
-
+            return np.ones(self.context_dimension_features_only) * 0.5 
+    
         normalized_features = np.array([
             self._normalize_feature(val, key) for val, key in zip(feature_values_ordered, feature_keys_ordered)
         ])
