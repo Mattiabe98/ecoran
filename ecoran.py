@@ -677,6 +677,7 @@ class PowerManager(xAppBase):
 
     def _kpm_indication_callback(self, e2_agent_id: str, subscription_id: str,
                                  indication_hdr_bytes: bytes, indication_msg_bytes: bytes):
+        print("Got KPM reply!!")
         self._log(DEBUG_KPM, f"KPM CB: Agent:{e2_agent_id}, Sub(E2EventInstanceID):{subscription_id}, Time:{time.monotonic():.3f}")
         if not self.e2sm_kpm: self._log(WARN, f"KPM from {e2_agent_id}, but e2sm_kpm unavailable."); return
     
