@@ -17,9 +17,9 @@ import json
 
 # Attempt to import contextualbandits library
 try:
-    from contextualbandits.online import LinUCB # Correct import path
+    from contextualbandits.online import LinTS # CHANGED FROM LinUCB
 except ImportError:
-    print("E: Failed to import LinUCB from contextualbandits.online. Please install the library: pip install contextualbandits")
+    print("E: Failed to import LinTS from contextualbandits.online. Please install the library: pip install contextualbandits")
     sys.exit(1)
 
 try:
@@ -43,21 +43,8 @@ LOGGING_LEVEL_MAP = {
     INFO: logging.INFO, DEBUG_KPM: logging.DEBUG, DEBUG_ALL: logging.DEBUG
 }
 
-# --- Context Feature Indices (Ensure this matches _get_current_context_vector order) ---
-# This definition helps in understanding the context vector but is not strictly enforced by index in code below.
-# The order in _get_current_context_vector and the configured context_dimension_features_only are key.
-# CTX_IDX_BIAS = 0
-# CTX_IDX_TOTAL_BITS_DL_NORM = 1
-# CTX_IDX_TOTAL_BITS_UL_NORM = 2
-# CTX_IDX_PRB_TOT_DL_NORM = 3
-# CTX_IDX_PRB_TOT_UL_NORM = 4
-# CTX_IDX_NUM_ACTIVE_UES_NORM = 5
-# CTX_IDX_NUM_ACTIVE_DUS_NORM = 6
-# CTX_IDX_RU_CPU_NORM = 7
-# CTX_IDX_CURRENT_TDP_NORM = 8
-# context_dimension_features_only would be 9 with these features
 
-def read_msr_direct(cpu_id: int, reg: int) -> Optional[int]: # Same as before
+def read_msr_direct(cpu_id: int, reg: int) -> Optional[int]:
     try:
         with open(f'/dev/cpu/{cpu_id}/msr', 'rb') as f:
             f.seek(reg)
@@ -73,15 +60,13 @@ def read_msr_direct(cpu_id: int, reg: int) -> Optional[int]: # Same as before
         print(f"E: Unexpected error reading MSR {hex(reg)} on CPU {cpu_id}: {e}", file=sys.stderr)
         return None
 
-class CoreMSRData: # Same as before
+class CoreMSRData:
     def __init__(self, core_id: int):
         self.core_id, self.mperf, self.tsc, self.busy_percent = core_id, None, None, 0.0
 
-# Our custom LinUCB class is now replaced by the library version.
-# We'll instantiate the library's LinUCB in PowerManager.
 
 class PowerManager(xAppBase):
-    MAX_VOLUME_COUNTER_KBITS = (2**32) - 1 # ~4 Tb, RLC SDU Volume is often 32-bit kbits
+    MAX_VOLUME_COUNTER_KBITS = (2**32) - 1 
 
     def __init__(self, config_path: str, http_server_port: int, rmr_port: int, kpm_ran_func_id: int = 2):
         self.config_path = config_path
@@ -105,13 +90,13 @@ class PowerManager(xAppBase):
         # --- Timing & Control Loop Parameters ---
         self.main_loop_sleep_s = float(self.config.get('main_loop_sleep_s', 0.1))
         self.ru_timing_pid_interval_s = float(self.config.get('ru_timing_pid_interval_s', 1.0))
-        self.optimizer_decision_interval_s = float(self.config.get('optimizer_decision_interval_s', 10.0))
+        self.optimizer_decision_interval_s = float(self.config.get('optimizer_decision_interval_s', 5.0)) # Default 5s
         self.stats_print_interval_s = float(self.config.get('stats_print_interval_s', self.optimizer_decision_interval_s))
 
         # --- TDP Management Parameters ---
         self.tdp_min_w = int(self.config.get('tdp_range', {}).get('min', 90))
         self.tdp_max_w = int(self.config.get('tdp_range', {}).get('max', 170))
-        self.target_ru_cpu_usage = float(self.config.get('target_ru_timing_cpu_usage', 99.5))
+        self.target_ru_cpu_usage = float(self.config.get('target_ru_timing_cpu_usage', 99.8)) # Was 99.5
         self.ru_timing_core_indices = self._parse_core_list_string(self.config.get('ru_timing_cores', ""))
         self.tdp_adj_sensitivity_factor = float(self.config.get('tdp_adjustment_sensitivity', 0.0005))
         self.tdp_adj_step_w_small = float(self.config.get('tdp_adjustment_step_w_small', 1.0))
@@ -121,7 +106,7 @@ class PowerManager(xAppBase):
         # --- System State Variables ---
         self.max_samples_cpu_avg = int(self.config.get('max_cpu_usage_samples', 3))
         self.dry_run = bool(self.config.get('dry_run', False))
-        self.current_tdp_w = float(self.tdp_min_w) # Will be updated from HW
+        self.current_tdp_w = float(self.tdp_min_w) 
         self.last_pkg_energy_uj: Optional[int] = None
         self.last_energy_read_time: Optional[float] = None
         self.energy_at_last_optimizer_interval_uj: Optional[int] = None
@@ -132,16 +117,13 @@ class PowerManager(xAppBase):
         self.kpm_ran_func_id = kpm_ran_func_id
         if hasattr(self, 'e2sm_kpm') and self.e2sm_kpm is not None: self.e2sm_kpm.set_ran_func_id(self.kpm_ran_func_id)
         else: self._log(WARN, "xAppBase.e2sm_kpm module unavailable."); self.e2sm_kpm = None
-        self.gnb_ids_map = self.config.get('gnb_ids', {}) # Maps DU name to gNB E2NodeID
+        self.gnb_ids_map = self.config.get('gnb_ids', {}) 
         self.kpm_data_lock = threading.Lock()
-        # Stores summed per-gNB data derived from Style 4 per-UE reports
         self.accumulated_kpm_metrics: Dict[str, Dict[str, Any]] = {}
-        # Stores unique UE IDs seen in current optimizer interval (globally unique: gnbID_localUEID)
         self.current_interval_ue_ids: Set[str] = set()
-        # Stores per-UE data for calculating active UEs etc. within an interval
-        self.current_interval_per_ue_data: Dict[str, Dict[str, float]] = {} # Key: global_ue_id, Value: {metric: value}
+        self.current_interval_per_ue_data: Dict[str, Dict[str, float]] = {}
 
-        # --- Contextual Bandit (using `contextualbandits` library) ---
+        # --- Contextual Bandit ---
         cb_config = self.config.get('contextual_bandit', {})
         bandit_actions_w_str = cb_config.get('actions_tdp_delta_w', {"dec_10": -10.0, "dec_5": -5.0, "hold": 0.0, "inc_5": 5.0, "inc_10": 10.0})
         self.bandit_actions: Dict[str, float] = {k: float(v) for k, v in bandit_actions_w_str.items()}
@@ -150,35 +132,47 @@ class PowerManager(xAppBase):
             self.bandit_actions["hold"] = 0.0
             if "hold" not in self.arm_keys_ordered: self.arm_keys_ordered.append("hold")
         
-        # THIS IS THE KEY ATTRIBUTE for number of features we prepare (excluding bias if lib handles it)
         self.context_dimension_features_only = int(cb_config.get('context_dimension_features_only', 8)) 
-        self.linucb_alpha = float(cb_config.get('alpha', 1.0)) 
-        self.linucb_lambda_ = float(cb_config.get('lambda_', 0.1)) 
-        self.linucb_fit_intercept = bool(cb_config.get('fit_intercept', True)) # Default to True
-        self.linucb_ucb_from_empty = bool(cb_config.get('ucb_from_empty', False)) 
-        beta_prior_config = cb_config.get('beta_prior', "auto") 
         
-        self._log(INFO, f"Initializing LinUCB with nchoices={len(self.arm_keys_ordered)}, alpha={self.linucb_alpha}, lambda_={self.linucb_lambda_}, fit_intercept={self.linucb_fit_intercept}")
-        
-        # The library's LinUCB infers ndim from data.
-        # If fit_intercept is True, library handles bias, pass ndim as actual feature count.
-        # If fit_intercept is False, we add bias, so ndim passed to library is feature_count + 1.
-        ndim_for_lib_init = self.context_dimension_features_only
-        if not self.linucb_fit_intercept:
-            ndim_for_lib_init +=1 # We will be adding a bias term manually
+        # LinTS specific parameters from config (with defaults)
+        self.lints_lambda_ = float(cb_config.get('lambda_', 1.0))  # Default from LinTS doc
+        self.lints_fit_intercept = bool(cb_config.get('fit_intercept', True))
+        self.lints_v_sq = float(cb_config.get('v_sq', 0.1)) # Recommended to decrease from 1.0, let's try 0.1
+        self.lints_sample_from = str(cb_config.get('sample_from', "coef"))
+        self.lints_method = str(cb_config.get('method', "chol"))
+        self.lints_beta_prior = cb_config.get('beta_prior', "auto") # Can be None, "auto", or specific tuple
+        self.lints_smoothing = cb_config.get('smoothing', None) # Can be None or tuple
+        lints_random_state_cfg = cb_config.get('random_state', None)
+        self.lints_random_state = int(lints_random_state_cfg) if lints_random_state_cfg is not None else None
 
-        self.contextual_bandit_model = LinUCB(
+
+        self._log(INFO, f"Initializing LinTS with nchoices={len(self.arm_keys_ordered)}, "
+                        f"lambda_={self.lints_lambda_}, fit_intercept={self.lints_fit_intercept}, "
+                        f"v_sq={self.lints_v_sq}, sample_from='{self.lints_sample_from}', "
+                        f"method='{self.lints_method}', beta_prior='{self.lints_beta_prior}', "
+                        f"random_state={self.lints_random_state}")
+
+        self.contextual_bandit_model = LinTS(
             nchoices=len(self.arm_keys_ordered),
-            alpha=self.linucb_alpha,
-            lambda_=self.linucb_lambda_,
-            fit_intercept=self.linucb_fit_intercept,
-            ucb_from_empty=self.linucb_ucb_from_empty,
-            beta_prior=beta_prior_config # Pass the config value directly
-            # method='sm' is default
+            lambda_=self.lints_lambda_,
+            fit_intercept=self.lints_fit_intercept,
+            v_sq=self.lints_v_sq,
+            sample_from=self.lints_sample_from,
+            # n_presampled=None, # Default
+            # sample_unique=True, # Default
+            # use_float=False, # Default
+            method=self.lints_method,
+            beta_prior=self.lints_beta_prior,
+            smoothing=self.lints_smoothing,
+            # noise_to_smooth=True, # Default
+            # assume_unique_reward=False, # Default
+            random_state=self.lints_random_state,
+            # njobs=1 # Default
         )
+
         self.optimizer_target_tdp_w = self.current_tdp_w
         self.last_selected_arm_index: Optional[int] = None
-        self.last_context_vector: Optional[np.array] = None
+        self.last_context_vector: Optional[np.array] = None # Type hint for clarity
         self.total_bits_from_previous_optimizer_interval: Optional[float] = None
         self.throughput_change_threshold_for_discard = float(cb_config.get('throughput_change_threshold_for_discard', 1.0))
         self.active_ue_throughput_threshold_mbps = float(cb_config.get('active_ue_throughput_threshold_mbps', 1.0))
@@ -186,12 +180,11 @@ class PowerManager(xAppBase):
         self.norm_params = cb_config.get('normalization_parameters', {})
         self._ensure_default_norm_params()
 
-
         # --- Timestamps and Logging Variables ---
         self.last_ru_pid_run_time: float = 0.0
         self.last_optimizer_run_time: float = 0.0
         self.last_stats_print_time: float = 0.0
-        self.most_recent_calculated_efficiency_for_log: Optional[float] = None
+        self.most_recent_calculated_reward_for_log: Optional[float] = None # For logging
         self.current_num_active_ues_for_log: int = 0
 
         self._validate_config()
@@ -200,15 +193,16 @@ class PowerManager(xAppBase):
     def _ensure_default_norm_params(self):
         """Ensure essential normalization parameters have defaults if not in config."""
         defaults = {
-            'bias': {'min': 1.0, 'max': 1.0},
+            'bias': {'min': 1.0, 'max': 1.0}, # If we were adding bias manually
             'total_bits_dl_per_second': {'min': 0.0, 'max': 1e9}, # 1 Gbps
             'total_bits_ul_per_second': {'min': 0.0, 'max': 1e9}, # 1 Gbps
-            'prb_total_dl_percentage': {'min': 0.0, 'max': float(len(self.gnb_ids_map) or 1.0) * 100.0}, # Max 100% per DU
+            'prb_total_dl_percentage': {'min': 0.0, 'max': float(len(self.gnb_ids_map) or 1.0) * 100.0},
             'prb_total_ul_percentage': {'min': 0.0, 'max': float(len(self.gnb_ids_map) or 1.0) * 100.0},
             'num_active_ues': {'min': 0, 'max': 100.0},
             'num_active_dus': {'min': 0, 'max': float(len(self.gnb_ids_map) or 1.0)},
-            'ru_cpu_usage': {'min': 80.0, 'max': 100.0},
-            'current_tdp': {'min': float(self.tdp_min_w), 'max': float(self.tdp_max_w)}
+            'ru_cpu_usage': {'min': 80.0, 'max': 100.0}, # Assuming RU CPU won't go below 80%
+            'current_tdp': {'min': float(self.tdp_min_w), 'max': float(self.tdp_max_w)},
+            'efficiency_reward': {'min': 0.0, 'max': 5.0} # Bits/uJ - adjust based on expected range
         }
         for key, default_val in defaults.items():
             if key not in self.norm_params:
@@ -216,7 +210,7 @@ class PowerManager(xAppBase):
                 self._log(INFO, f"Normalization param for '{key}' not in config, using default: {default_val}")
 
 
-    def _normalize_feature(self, value: float, feature_key: str) -> float: # Same as before
+    def _normalize_feature(self, value: float, feature_key: str) -> float:
         params = self.norm_params.get(feature_key)
         if not params:
             self._log(WARN, f"Normalization params not found for {feature_key}. Returning raw value: {value}")
@@ -224,9 +218,9 @@ class PowerManager(xAppBase):
         val_min = float(params.get('min', 0.0))
         val_max = float(params.get('max', 1.0))
         if val_max == val_min: 
-            return 0.5 if value == val_min else (0.0 if value < val_min else 1.0)
+            return 0.5 if value == val_min else (0.0 if value < val_min else 1.0) # Avoid div by zero
         normalized = (value - val_min) / (val_max - val_min)
-        return max(0.0, min(1.0, normalized)) 
+        return max(0.0, min(1.0, normalized)) # Clamp to [0,1]
     
     
     def _get_current_context_vector(self,
@@ -240,13 +234,11 @@ class PowerManager(xAppBase):
                                    current_actual_tdp: float) -> np.array:
         
         interval_s = self.optimizer_decision_interval_s
-        if interval_s <=0: interval_s = 1.0 
+        if interval_s <=0: interval_s = 1.0 # Should not happen with config
     
         bits_dl_ps = current_total_bits_dl_interval / interval_s if interval_s > 0 else 0.0
         bits_ul_ps = current_total_bits_ul_interval / interval_s if interval_s > 0 else 0.0
     
-        # Order of features must be consistent
-        # NO explicit bias term if LinUCB's fit_intercept=True
         feature_values_ordered = [
             bits_dl_ps,
             bits_ul_ps,
@@ -255,7 +247,7 @@ class PowerManager(xAppBase):
             float(current_num_active_ues),
             float(current_num_active_dus),
             current_ru_cpu_avg,
-            current_actual_tdp
+            current_actual_tdp # This is the TDP *before* the next action is decided
         ]
         feature_keys_ordered = [
             'total_bits_dl_per_second',
@@ -268,13 +260,11 @@ class PowerManager(xAppBase):
             'current_tdp'
         ]
     
-        # The configured self.context_dimension_features_only should match len(feature_values_ordered)
         if len(feature_values_ordered) != self.context_dimension_features_only:
             self._log(ERROR, f"Number of actual features ({len(feature_values_ordered)}) "
                              f"does not match configured context_dimension_features_only ({self.context_dimension_features_only}). "
                              "Check feature list and config.")
-            # Fallback to avoid crash, but this indicates a config/code mismatch
-            return np.ones(self.context_dimension_features_only) * 0.5 
+            return np.ones(self.context_dimension_features_only) * 0.5 # Fallback
     
         normalized_features = np.array([
             self._normalize_feature(val, key) for val, key in zip(feature_values_ordered, feature_keys_ordered)
@@ -282,8 +272,6 @@ class PowerManager(xAppBase):
         
         return normalized_features
     
-    # ... (Logging, _load_config, _parse_core_list_string, MSR methods, _run_command, _setup_intel_sst, RAPL methods, _run_ru_timing_pid_step, _get_pkg_power_w, _read_current_energy_uj, _get_interval_energy_uj_for_optimizer are UNCHANGED from the final KPM Style 4 version)
-    # For brevity, I'll copy a few and indicate others are the same.
     def _setup_logging(self):
         self.logger = logging.getLogger("EcoRANPowerManager")
         self.logger.handlers = [] 
@@ -345,8 +333,7 @@ class PowerManager(xAppBase):
             self._log(INFO, "MSR access test passed.")
         try: subprocess.run([self.intel_sst_path,"--version"],capture_output=True,check=True,text=True)
         except Exception as e: self._log(ERROR, f"'{self.intel_sst_path}' failed: {e}. Exiting."); sys.exit(1)
-        if 'bias' not in self.norm_params: # Ensure bias normalization is present for context vector
-            self.norm_params['bias'] = {'min': 1.0, 'max': 1.0} # Bias is always 1, so normalized is 1 (or 0.5 if min=max=0)
+        # No explicit 'bias' normalization parameter needed if fit_intercept=True for LinTS
         self._log(INFO, "Configuration and system checks passed.")
 
     def _load_config(self) -> Dict[str, Any]:
@@ -497,16 +484,16 @@ class PowerManager(xAppBase):
         if self.dry_run:
             if significant_change:
                 self._log(INFO, f"[DRY RUN] {context}. New Target TDP: {new_tdp_w:.1f}W (Previous: {self.current_tdp_w:.1f}W).")
-            self.current_tdp_w = new_tdp_w
+            self.current_tdp_w = new_tdp_w # Update internal state even in dry run
             return
 
         try:
             with open(self.power_limit_uw_file, 'r') as f_read:
                 current_hw_limit_uw = int(f_read.read().strip())
             if current_hw_limit_uw == clamped_tdp_uw:
-                if significant_change: 
+                if significant_change: # Only log if it's a logical change even if HW is same
                     self._log(INFO, f"{context}. Target TDP: {new_tdp_w:.1f}W (already set in HW, updating internal state).")
-                    self.current_tdp_w = new_tdp_w
+                self.current_tdp_w = new_tdp_w # Update internal state
                 return 
         except Exception as e:
             self._log(WARN, f"Could not read {self.power_limit_uw_file} before write: {e}. Proceeding with write.")
@@ -524,155 +511,153 @@ class PowerManager(xAppBase):
             raise RuntimeError(f"Exception setting TDP: {e}")
 
       
-    def _run_ru_timing_pid_step(self, current_ru_cpu_usage: float): # No longer needs num_active_ues
+    def _run_ru_timing_pid_step(self, current_ru_cpu_usage: float):
         if not self.ru_timing_core_indices: return 
     
-        # Only act if RU CPU is TOO HIGH
-        # Using a slightly more critical threshold than the CB's target for intervention
-        pid_critical_ru_cpu_trigger = self.target_ru_cpu_usage + (self.target_ru_cpu_usage * self.tdp_adj_sensitivity_factor * 0.5) # e.g., 99.5% + small margin
-        # Or a hardcoded critical like 99.7%
-        # pid_critical_ru_cpu_trigger = 99.7 
-    
+        pid_critical_ru_cpu_trigger = self.target_ru_cpu_usage # Using the direct target now
     
         if current_ru_cpu_usage > pid_critical_ru_cpu_trigger:
-            # RU CPU is too high, PID must increase TDP to give headroom
-            # Use a determined step, could be small or large based on how far over
-            error_for_step_calc = pid_critical_ru_cpu_trigger - current_ru_cpu_usage # Will be negative
-            abs_error_for_step_calc = abs(error_for_step_calc)
-            
-            # Use a simplified step logic for this safety net
-            # For example, always use the large step for a quick reaction
             tdp_change_w = self.tdp_adj_step_w_large 
-            # Or, more sophisticated:
-            # sensitivity_thresh_abs = self.target_ru_cpu_usage * self.tdp_adj_sensitivity_factor
-            # step_size_pid = self.tdp_adj_step_w_large if abs_error_for_step_calc > (sensitivity_thresh_abs * self.adaptive_step_far_thresh_factor) else self.tdp_adj_step_w_small
-            # tdp_change_w = step_size_pid
-    
-    
             new_target_tdp = self.current_tdp_w + tdp_change_w
             
             ctx = (f"RU_PID_SAFETY_NET: RU CPU {current_ru_cpu_usage:.2f}% > Trigger {pid_critical_ru_cpu_trigger:.2f}%. "
                    f"Forcing TDP Increase by {tdp_change_w:.1f}W")
             self._set_tdp_limit_w(new_target_tdp, context=ctx)
-        # else:
-            # self._log(DEBUG_ALL, f"RU_PID_SAFETY_NET: RU CPU {current_ru_cpu_usage:.2f}% <= Trigger {pid_critical_ru_cpu_trigger:.2f}%. No PID action.")
-            # PID does nothing if RU CPU is not critically high. CB is responsible for decreases.
+            # CRITICAL: When PID acts, it should influence the bandit's perceived target TDP
+            self.optimizer_target_tdp_w = self._read_current_tdp_limit_w() 
+            self._log(DEBUG_ALL, f"PID updated optimizer_target_tdp_w to {self.optimizer_target_tdp_w:.1f}W")
     
     def _run_contextual_bandit_optimizer_step(self, current_reward_for_bandit: Optional[float],
                                              current_context_vector: Optional[np.array],
                                              significant_throughput_change: bool):
-        # 1. Update bandit with the reward from the PREVIOUS action (if any valid data)
+        # 1. Update bandit with the reward from the PREVIOUS action
         if self.last_selected_arm_index is not None and self.last_context_vector is not None:
             if significant_throughput_change:
                 self._log(WARN, f"CB Lib: Skipping update for arm_idx '{self.last_selected_arm_index}' due to sig. throughput change.")
-            elif current_reward_for_bandit is not None and math.isfinite(current_reward_for_bandit) and not math.isnan(current_reward_for_bandit):
+            elif current_reward_for_bandit is not None and math.isfinite(current_reward_for_bandit):
                 try:
                     X_update = self.last_context_vector.reshape(1, -1)
-                    action_update = np.array([self.last_selected_arm_index], dtype=int) # Ensure dtype is int
+                    action_update = np.array([self.last_selected_arm_index], dtype=int)
                     reward_update = np.array([current_reward_for_bandit])
 
-                    self.contextual_bandit_model.fit(X_update, action_update, reward_update)
+                    self.contextual_bandit_model.partial_fit(X_update, action_update, reward_update) # Use partial_fit for online updates
                     
                     last_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
                     self._log(INFO, f"CB Lib: Updated ArmIdx '{self.last_selected_arm_index}' (Key: {last_arm_key}) with reward {current_reward_for_bandit:.3f}.")
                 except Exception as e:
-                    self._log.error(f"CB Lib: Error during model fit/update: {e}")
+                    self._log.error(f"CB Lib: Error during model partial_fit/update: {e}") # Typo: self._log.error -> self._log(ERROR, ...)
             else:
-                self._log(WARN, f"CB Lib: Invalid efficiency ({current_reward_for_bandit}) for arm_idx '{self.last_selected_arm_index}'. Skipping update.")
+                self._log(WARN, f"CB Lib: Invalid reward ({current_reward_for_bandit}) for arm_idx '{self.last_selected_arm_index}'. Skipping update.")
         
         # 2. Select new arm
-        selected_arm_index = 0  # Default to first arm if errors occur
+        selected_arm_index = 0 
         selected_arm_key_log = self.arm_keys_ordered[0] if self.arm_keys_ordered else "N/A_NO_ARMS"
-        scores_for_logging_str = "N/A_SCORES" # Default for logging string
+        scores_for_logging_str = "N/A_SCORES"
 
         if current_context_vector is None:
-            self._log(WARN, "CB Lib: Current context vector is None. Defaulting to 'hold' arm or first arm.")
-            selected_arm_key_default = "hold"
-            if "hold" not in self.arm_keys_ordered and self.arm_keys_ordered:
-                selected_arm_key_default = self.arm_keys_ordered[0]
-            elif not self.arm_keys_ordered: # Should not happen
-                 selected_arm_key_default = "N/A_NO_ARMS" # Error state
-            
-            if self.arm_keys_ordered and selected_arm_key_default != "N/A_NO_ARMS" and selected_arm_key_default in self.arm_keys_ordered :
-                 selected_arm_index = self.arm_keys_ordered.index(selected_arm_key_default)
-            # If arm_keys_ordered is empty, selected_arm_index remains 0, selected_arm_key_log will be N/A_NO_ARMS
-            selected_arm_key_log = selected_arm_key_default 
-            scores_for_logging_str = "[Defaulted due to None context]"
-        else:
+            self._log(WARN, "CB Lib: Current context vector is None. Defaulting to 'hold' or first arm.")
+            # Logic to select default arm (e.g., 'hold' or random)
+            # For LinTS, decision_function might still work or predict might be used.
+            # If truly no context, we might need to rely on beta_prior or smoothing if active.
+            # For simplicity, let's assume predict might give a random choice or based on priors.
             try:
-                # decision_function(X) should return array of shape (n_samples, n_choices)
-                raw_scores_output = self.contextual_bandit_model.decision_function(current_context_vector.reshape(1, -1))
-                
-                self._log(DEBUG_ALL, f"CB Lib: Raw decision_function output: {raw_scores_output}, type: {type(raw_scores_output)}")
-                if isinstance(raw_scores_output, np.ndarray):
-                    self._log(DEBUG_ALL, f"CB Lib: Raw scores shape: {raw_scores_output.shape}")
-
-                if isinstance(raw_scores_output, np.ndarray) and raw_scores_output.ndim == 2 and raw_scores_output.shape[0] == 1:
-                    actual_scores_array = raw_scores_output[0] # This should be a 1D array of scores
-                    if actual_scores_array.size == len(self.arm_keys_ordered):
-                        selected_arm_index = np.argmax(actual_scores_array)
-                        selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
-                        # Construct the string of scores for logging
-                        scores_for_logging_str = ", ".join([
-                            f"{self.arm_keys_ordered[i]}:{s:.3f}" 
-                            for i, s in enumerate(actual_scores_array) 
-                            if i < len(self.arm_keys_ordered) # Defensive check
-                        ])
-                    else:
-                        self._log(ERROR, f"CB Lib: Scores array size {actual_scores_array.size} != nchoices {len(self.arm_keys_ordered)}. Defaulting arm.")
-                        if self.arm_keys_ordered: selected_arm_index = random.choice(range(len(self.arm_keys_ordered)))
-                        if self.arm_keys_ordered: selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
-                        scores_for_logging_str = "[Error: Score size mismatch]"
-                # This elif handles if predict() was used and returned an index, or if decision_function returns something scalar
-                elif isinstance(raw_scores_output, (np.int64, int, float, np.integer, np.floating)): 
-                    self._log(WARN, f"CB Lib: decision_function returned a single value ({raw_scores_output}), not a score array. Assuming it's the chosen index.")
-                    if self.arm_keys_ordered and 0 <= int(raw_scores_output) < len(self.arm_keys_ordered):
-                        selected_arm_index = int(raw_scores_output)
-                        selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
-                        scores_for_logging_str = f"[Returned Index Directly: {selected_arm_index}]"
-                    else:
-                        self._log(ERROR, f"CB Lib: Returned single index {raw_scores_output} out of bounds. Defaulting arm.")
-                        if self.arm_keys_ordered: selected_arm_index = random.choice(range(len(self.arm_keys_ordered)))
-                        if self.arm_keys_ordered: selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
-                        scores_for_logging_str = "[Error: Index out of bounds]"
-                else: # Fallback for other unexpected formats
-                    self._log(ERROR, f"CB Lib: Unexpected scores format from decision_function. Type: {type(raw_scores_output)}, Value: {raw_scores_output}. Defaulting arm.")
-                    if self.arm_keys_ordered: selected_arm_index = random.choice(range(len(self.arm_keys_ordered)))
-                    if self.arm_keys_ordered: selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
-                    scores_for_logging_str = "[Error: Unexpected scores format]"
+                if self.arm_keys_ordered: # Ensure there are arms
+                    # Create a dummy context or handle how LinTS predicts with None
+                    # This part might need adjustment based on how LinTS handles None context
+                    # For now, let's try to get a prediction even with a dummy context if necessary
+                    # Or, more simply, pick a random arm or a 'hold' arm.
+                    selected_arm_key_default = "hold"
+                    if "hold" in self.arm_keys_ordered:
+                        selected_arm_index = self.arm_keys_ordered.index("hold")
+                    elif self.arm_keys_ordered:
+                        selected_arm_index = random.choice(range(len(self.arm_keys_ordered)))
+                    selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
+                    scores_for_logging_str = "[Defaulted due to None context - random/hold]"
+                else: # Should not happen
+                    selected_arm_key_log = "N/A_NO_ARMS"
+                    scores_for_logging_str = "[Error: No arms and None context]"
 
             except Exception as e:
-                self._log.error(f"CB Lib: Error during arm selection (decision_function or processing): {e}. Defaulting to random arm.")
+                 self._log(ERROR, f"CB Lib: Error during default arm selection for None context: {e}")
+                 if self.arm_keys_ordered: selected_arm_index = random.choice(range(len(self.arm_keys_ordered)))
+                 if self.arm_keys_ordered: selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
+
+        else: # Context is available
+            try:
+                # LinTS typically uses .predict() which directly gives the chosen arm index
+                # based on sampling. decision_function might give scores before sampling.
+                # Let's assume we want the sampled choice directly.
+                # The `predict` method of LinTS in this library returns the chosen arm index.
+                reshaped_context = current_context_vector.reshape(1, -1)
+                predicted_arm_indices = self.contextual_bandit_model.predict(reshaped_context)
+                
+                if isinstance(predicted_arm_indices, np.ndarray) and predicted_arm_indices.size == 1:
+                    selected_arm_index = int(predicted_arm_indices[0])
+                    if 0 <= selected_arm_index < len(self.arm_keys_ordered):
+                        selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
+                        # LinTS doesn't naturally provide "scores" for all arms in the same way LinUCB does,
+                        # as it samples coefficients and then picks the max.
+                        # We could call decision_function if we want to see the raw E[reward] before sampling,
+                        # but the choice is based on the sampled coefficients.
+                        try:
+                            # For logging scores (expected values before sampling for this step)
+                            raw_scores_output = self.contextual_bandit_model.decision_function(reshaped_context)
+                            if isinstance(raw_scores_output, np.ndarray) and raw_scores_output.ndim == 2 and raw_scores_output.shape[0] == 1:
+                                actual_scores_array = raw_scores_output[0]
+                                scores_for_logging_str = ", ".join([
+                                    f"{self.arm_keys_ordered[i]}:{s:.3f}" 
+                                    for i, s in enumerate(actual_scores_array) 
+                                    if i < len(self.arm_keys_ordered)
+                                ])
+                            else:
+                                scores_for_logging_str = "[Scores not in expected array format]"
+                        except Exception as e_score:
+                            self._log(DEBUG_ALL, f"CB Lib: Could not get decision_function scores for logging: {e_score}")
+                            scores_for_logging_str = "[Scores N/A for LinTS predict]"
+
+                    else:
+                        self._log(ERROR, f"CB Lib: Predicted arm index {selected_arm_index} out of bounds. Defaulting.")
+                        if self.arm_keys_ordered: selected_arm_index = random.choice(range(len(self.arm_keys_ordered)))
+                        if self.arm_keys_ordered: selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
+                        scores_for_logging_str = "[Error: Predicted index out of bounds]"
+                else:
+                    self._log(ERROR, f"CB Lib: Predict method returned unexpected format: {predicted_arm_indices}. Defaulting.")
+                    if self.arm_keys_ordered: selected_arm_index = random.choice(range(len(self.arm_keys_ordered)))
+                    if self.arm_keys_ordered: selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
+                    scores_for_logging_str = "[Error: Unexpected predict format]"
+
+            except Exception as e:
+                self._log(ERROR, f"CB Lib: Error during arm selection (predict or processing): {e}. Defaulting arm.")
                 if self.arm_keys_ordered: selected_arm_index = random.choice(range(len(self.arm_keys_ordered)))
                 if self.arm_keys_ordered: selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
                 scores_for_logging_str = "[Error: Exception in arm selection]"
         
-        # Use the processed scores_for_logging_str for the log message
-        self._log(INFO, f"CB Lib: Selected ArmIdx '{selected_arm_index}' (Key: {selected_arm_key_log}). Scores: [{scores_for_logging_str}]") # THIS IS THE CORRECTED LOGGING LINE
+        self._log(INFO, f"CB Lib: Selected ArmIdx '{selected_arm_index}' (Key: {selected_arm_key_log}). Scores (expected): [{scores_for_logging_str}]")
         
         self.last_selected_arm_index = selected_arm_index
-        self.last_context_vector = current_context_vector
+        self.last_context_vector = current_context_vector # Store the non-reshaped one
 
         actual_selected_arm_key_from_idx = self.arm_keys_ordered[selected_arm_index] if self.arm_keys_ordered and selected_arm_index < len(self.arm_keys_ordered) else "hold" 
         if actual_selected_arm_key_from_idx not in self.bandit_actions: 
             self._log(WARN, f"Selected arm key '{actual_selected_arm_key_from_idx}' not in bandit_actions. Defaulting to 'hold'.")
             actual_selected_arm_key_from_idx = "hold" if "hold" in self.bandit_actions else (self.arm_keys_ordered[0] if self.arm_keys_ordered else "error_no_arm")
 
-
         tdp_delta_w = self.bandit_actions.get(actual_selected_arm_key_from_idx, 0.0)
-
-        base_tdp_for_bandit_decision = self.optimizer_target_tdp_w
-        # base_tdp_for_bandit_decision = self.current_tdp_w
+        
+        # Base TDP for decision should be the one the bandit intended to operate from if it was set last.
+        # If PID interfered, self.current_tdp_w would be different.
+        # Using optimizer_target_tdp_w as the base for *this* decision.
+        base_tdp_for_bandit_decision = self.optimizer_target_tdp_w 
         proposed_next_tdp_by_bandit = base_tdp_for_bandit_decision + tdp_delta_w
         
         self._log(INFO, f"CB Lib Action: ArmKey='{actual_selected_arm_key_from_idx}', Delta={tdp_delta_w:.1f}W. "
-                        f"Base TDP: {base_tdp_for_bandit_decision:.1f}W. "
+                        f"Base TDP (optimizer target): {base_tdp_for_bandit_decision:.1f}W. "
                         f"Proposed TDP: {proposed_next_tdp_by_bandit:.1f}W.")
         if current_context_vector is not None:
-             self._log(DEBUG_ALL, f"CB Lib Context: {['{:.2f}'.format(x) for x in current_context_vector]}")
+             self._log(DEBUG_ALL, f"CB Lib Context (used for decision): {['{:.2f}'.format(x) for x in current_context_vector]}")
 
         self._set_tdp_limit_w(proposed_next_tdp_by_bandit, context=f"Optimizer CB Lib (Arm: {actual_selected_arm_key_from_idx})")
-        self.optimizer_target_tdp_w = self._read_current_tdp_limit_w()
+        self.optimizer_target_tdp_w = self._read_current_tdp_limit_w() # Update target to what was actually set
 
 
     def _get_pkg_power_w(self) -> Tuple[float, bool]:
@@ -701,7 +686,7 @@ class PowerManager(xAppBase):
                         self.last_pkg_energy_uj, self.last_energy_read_time = current_e_uj, now
                         return pwr_w, ok 
             
-            if ok or self.last_pkg_energy_uj is None:
+            if ok or self.last_pkg_energy_uj is None: # Update baseline if first read or successful calculation
                  self.last_pkg_energy_uj, self.last_energy_read_time = current_e_uj, now
             return pwr_w, ok
         except Exception as e:
@@ -744,8 +729,6 @@ class PowerManager(xAppBase):
         try:
             kpm_hdr_info = self.e2sm_kpm.extract_hdr_info(indication_hdr_bytes)
             kpm_meas_data = self.e2sm_kpm.extract_meas_data(indication_msg_bytes)
-            # self._log(DEBUG_ALL, f"KPM CB RAW HDR: {kpm_hdr_info}")
-            # self._log(DEBUG_ALL, f"KPM CB RAW MSG DATA: {kpm_meas_data}") # Can be very verbose
     
             if not kpm_meas_data: 
                 self._log(WARN, f"KPM CB Style 4: Failed/empty KPM data from {e2_agent_id}. HDR: {kpm_hdr_info}"); return
@@ -754,8 +737,8 @@ class PowerManager(xAppBase):
             if not isinstance(ue_meas_data_map, dict):
                 self._log(WARN, f"KPM CB Style 4: Invalid 'ueMeasData' from {e2_agent_id}. Data: {kpm_meas_data}"); return
             
-            if not ue_meas_data_map: # No UEs in this specific report
-                with self.kpm_data_lock: # Still count the report for the gNB
+            if not ue_meas_data_map: 
+                with self.kpm_data_lock: 
                     if e2_agent_id not in self.accumulated_kpm_metrics:
                         self.accumulated_kpm_metrics[e2_agent_id] = {'bits_sum_dl':0.0, 'bits_sum_ul':0.0, 'prb_sum_dl':0.0, 'prb_sum_ul':0.0, 'num_reports':0}
                     self.accumulated_kpm_metrics[e2_agent_id]['num_reports'] += 1
@@ -768,35 +751,29 @@ class PowerManager(xAppBase):
             for ue_id_str, per_ue_measurements in ue_meas_data_map.items():
                 global_ue_id = f"{e2_agent_id}_{ue_id_str}" 
                 ues_in_this_report_for_this_gnb.add(global_ue_id)
-
                 ue_dl_bits_this_ue = 0
                 ue_ul_bits_this_ue = 0
-
                 ue_metrics = per_ue_measurements.get("measData", {})
-                if not isinstance(ue_metrics, dict): continue # Skip malformed UE data
+                if not isinstance(ue_metrics, dict): continue 
                 
                 for metric_name, value_list in ue_metrics.items():
                     if isinstance(value_list, list) and value_list:
-                        # Summing values if KPM could report multiple values for a metric in a single UE report (e.g. per QCI)
-                        # For RLC SDU volume, it's usually one value. For PRB, usually one.
                         value = sum(val for val in value_list if isinstance(val, (int, float)))
-
                         try:
                             if metric_name == 'DRB.RlcSduTransmittedVolumeDL':
-                                ue_dl_bits_this_ue = float(value) * 1000.0 # kbits to bits
+                                ue_dl_bits_this_ue = float(value) * 1000.0 
                                 gNB_data_this_report['dl_bits'] += ue_dl_bits_this_ue
                             elif metric_name == 'DRB.RlcSduTransmittedVolumeUL':
-                                ue_ul_bits_this_ue = float(value) * 1000.0 # kbits to bits
+                                ue_ul_bits_this_ue = float(value) * 1000.0 
                                 gNB_data_this_report['ul_bits'] += ue_ul_bits_this_ue
-                            elif metric_name == 'RRU.PrbTotDl': # Assuming this is % for the UE
+                            elif metric_name == 'RRU.PrbTotDl': 
                                 gNB_data_this_report['dl_prb'] += float(value)
-                            elif metric_name == 'RRU.PrbTotUl': # Assuming this is % for the UE
+                            elif metric_name == 'RRU.PrbTotUl': 
                                 gNB_data_this_report['ul_prb'] += float(value)
                         except (ValueError, TypeError) as e:
                              self._log(WARN, f"KPM CB Style 4: Metric '{metric_name}' for UE {global_ue_id} value '{value_list}' processing error: {e}.")
                 
-                # Store per-UE total throughput for active UE calculation
-                with self.kpm_data_lock: # Protect shared self.current_interval_per_ue_data
+                with self.kpm_data_lock: 
                     if global_ue_id not in self.current_interval_per_ue_data:
                         self.current_interval_per_ue_data[global_ue_id] = {'total_bits': 0.0}
                     self.current_interval_per_ue_data[global_ue_id]['total_bits'] += (ue_dl_bits_this_ue + ue_ul_bits_this_ue)
@@ -810,9 +787,7 @@ class PowerManager(xAppBase):
                 acc['prb_sum_dl'] += gNB_data_this_report['dl_prb']
                 acc['prb_sum_ul'] += gNB_data_this_report['ul_prb']
                 acc['num_reports'] += 1
-                
                 self.current_interval_ue_ids.update(ues_in_this_report_for_this_gnb)
-                
                 self._log(DEBUG_KPM, f"KPM CB Style 4: {e2_agent_id}: "
                                      f"Bits(DL={gNB_data_this_report['dl_bits']:.0f}, UL={gNB_data_this_report['ul_bits']:.0f}), "
                                      f"PRB%(DL={gNB_data_this_report['dl_prb']:.1f}, UL={gNB_data_this_report['ul_prb']:.1f}). "
@@ -821,14 +796,14 @@ class PowerManager(xAppBase):
         except Exception as e: self._log(ERROR, f"Error processing KPM Style 4 from {e2_agent_id}: {e}"); import traceback; traceback.print_exc()
 
 
-    def _get_and_reset_accumulated_kpm_metrics(self) -> Dict[str, Dict[str, Any]]: # Now includes PRB
+    def _get_and_reset_accumulated_kpm_metrics(self) -> Dict[str, Dict[str, Any]]:
         with self.kpm_data_lock:
             snap = {}
             for gnb_id, data in self.accumulated_kpm_metrics.items():
                 snap[gnb_id] = {
                     'dl_bits': data.get('bits_sum_dl', 0.0),
                     'ul_bits': data.get('bits_sum_ul', 0.0),
-                    'dl_prb_sum_percentage': data.get('prb_sum_dl', 0.0), # Sum of PRB percentages reported
+                    'dl_prb_sum_percentage': data.get('prb_sum_dl', 0.0),
                     'ul_prb_sum_percentage': data.get('prb_sum_ul', 0.0),
                     'reports_in_interval': data.get('num_reports', 0)
                 }
@@ -838,37 +813,19 @@ class PowerManager(xAppBase):
         return snap
 
     def _get_and_reset_active_ue_count_and_data(self) -> Tuple[int, Dict[str, Dict[str, float]]]:
-        # Calculates active UEs based on throughput threshold from per-UE data collected in callbacks.
-        # Also returns the per-UE data for potential further use and clears it.
         active_ue_count = 0
-        report_interval_s = float(self.config.get('kpm_subscriptions', {}).get('style4_report_period_ms', 1000)) / 1000.0
-        if report_interval_s <= 0: report_interval_s = 1.0 # Avoid div by zero
-
-        threshold_bits = self.active_ue_throughput_threshold_mbps * 1024 * 1024 # Convert Mbps to bits for the interval
-        
-        # The current_interval_per_ue_data stores SUM of bits over MULTIPLE KPM reports if optimizer_interval > KPM_report_interval
-        # So threshold should be Mbps * optimizer_decision_interval_s
         threshold_bits_over_optimizer_interval = self.active_ue_throughput_threshold_mbps * 1e6 * self.optimizer_decision_interval_s
-
 
         with self.kpm_data_lock:
             for global_ue_id, ue_data in self.current_interval_per_ue_data.items():
                 if ue_data.get('total_bits', 0.0) >= threshold_bits_over_optimizer_interval :
                     active_ue_count += 1
-            
-            # For logging/debugging, what are the UEs that were active
-            # self._log(DEBUG_KPM, f"Active UE count: {active_ue_count} based on threshold {self.active_ue_throughput_threshold_mbps} Mbps over {self.optimizer_decision_interval_s}s.")
-
-            # Return a copy and clear
             per_ue_data_snap = self.current_interval_per_ue_data.copy()
             self.current_interval_per_ue_data.clear()
-            # Also clear the set of all seen UEs for the next interval
-            all_seen_ues_count = len(self.current_interval_ue_ids) # For logging if needed
             self.current_interval_ue_ids.clear()
+        return active_ue_count, per_ue_data_snap
 
-        return active_ue_count, per_ue_data_snap # also return all_seen_ues_count if needed
-
-    def _setup_kpm_subscriptions(self): # Same as previous Style 4 only version
+    def _setup_kpm_subscriptions(self):
         self._log(INFO, "--- Setting up KPM Style 4 Subscriptions (Per-UE Metrics) ---")
         if not self.e2sm_kpm: self._log(WARN, "e2sm_kpm module unavailable. Cannot subscribe."); return
         
@@ -876,15 +833,9 @@ class PowerManager(xAppBase):
         if not nodes: self._log(WARN, "No gNB IDs configured for KPM subscriptions."); return
 
         kpm_config = self.config.get('kpm_subscriptions', {})
-        
-        style4_metrics = kpm_config.get('style4_metrics_per_ue', [
-            'DRB.RlcSduTransmittedVolumeDL', 'DRB.RlcSduTransmittedVolumeUL',
-            'RRU.PrbTotDl', 'RRU.PrbTotUl' # Added PRB metrics
-        ])
+        style4_metrics = kpm_config.get('style4_metrics_per_ue', ['DRB.RlcSduTransmittedVolumeDL', 'DRB.RlcSduTransmittedVolumeUL', 'RRU.PrbTotDl', 'RRU.PrbTotUl'])
         style4_report_p_ms = int(kpm_config.get('style4_report_period_ms', 1000))
         style4_gran_p_ms = int(kpm_config.get('style4_granularity_period_ms', style4_report_p_ms))
-        
-        # Use the example's dummy condition for now, make sure it's robust or configurable to `[]`
         matching_ue_conds_config = kpm_config.get('style4_matching_ue_conditions', 
                                                   [{'testCondInfo': {'testType': ('ul-rSRP', 'true'), 'testExpr': 'lessthan', 'testValue': ('valueInt', 10000)}}])
             
@@ -917,10 +868,12 @@ class PowerManager(xAppBase):
             self._log(ERROR, "Must be root for live run. Exiting."); sys.exit(1)
         
         try:
-            # ... (Initializations for TDP, MSR, Energy, SST are THE SAME as before) ...
             self.current_tdp_w = self._read_current_tdp_limit_w()
+            # Initialize optimizer_target_tdp_w with the actual current TDP.
+            # This is the TDP the bandit should consider as its starting point if PID hasn't intervened.
             self.optimizer_target_tdp_w = self.current_tdp_w
-            self._log(INFO, f"Initial current TDP: {self.current_tdp_w:.1f}W. Optimizer target set to this.")
+            self._log(INFO, f"Initial current TDP: {self.current_tdp_w:.1f}W. Optimizer base target set to this.")
+
 
             if self.ru_timing_core_indices:
                 self._log(INFO, "Priming MSR data..."); self._update_ru_core_msr_data(); time.sleep(0.1); self._update_ru_core_msr_data(); self._log(INFO, "MSR primed.")
@@ -937,14 +890,23 @@ class PowerManager(xAppBase):
             self.last_ru_pid_run_time = now
             self.last_optimizer_run_time = now 
             self.last_stats_print_time = now
-            self.total_bits_from_previous_optimizer_interval = 0.0 # Initialize
+            self.total_bits_from_previous_optimizer_interval = 0.0
 
             self._log(INFO, f"\n--- Starting Monitoring & Control Loop ({'DRY RUN' if self.dry_run else 'LIVE RUN'}) ---")
             self._log(INFO, f"RU PID Interval: {self.ru_timing_pid_interval_s}s | Target RU CPU: {self.target_ru_cpu_usage if self.ru_timing_core_indices else 'N/A'}%")
             self._log(INFO, f"CB Optimizer Interval: {self.optimizer_decision_interval_s}s | TDP Range: {self.tdp_min_w}W-{self.tdp_max_w}W")
-            self._log(INFO, f"CB Actions: {self.bandit_actions}, Alpha: {self.linucb_alpha}")
-            self._log(INFO, f"CB Context Dim (features only): {self.context_dimension_features_only}, FitIntercept: {self.linucb_fit_intercept}. ActiveUE Thresh: {self.active_ue_throughput_threshold_mbps} Mbps.")
+            # Log LinTS specific parameters instead of LinUCB alpha
+            self._log(INFO, f"CB (LinTS) Actions: {self.bandit_actions}, v_sq: {self.lints_v_sq}, lambda: {self.lints_lambda_}")
+            self._log(INFO, f"CB Context Dim (features only): {self.context_dimension_features_only}, FitIntercept: {self.lints_fit_intercept}. ActiveUE Thresh: {self.active_ue_throughput_threshold_mbps} Mbps.")
             self._log(INFO, f"Stats Print Interval: {self.stats_print_interval_s}s")
+
+            # --- Rule-based descent parameters (optional) ---
+            enable_rule_based_idle_descent = bool(self.config.get('contextual_bandit',{}).get('enable_rule_based_idle_descent', False))
+            rule_idle_descent_tdp_thresh = float(self.config.get('contextual_bandit',{}).get('rule_idle_descent_tdp_thresh_w', self.tdp_min_w + 20)) # e.g. 110W
+            rule_idle_descent_step_w = float(self.config.get('contextual_bandit',{}).get('rule_idle_descent_step_w', 20.0))
+            rule_idle_descent_max_steps = int(self.config.get('contextual_bandit',{}).get('rule_idle_descent_max_steps', 3))
+            rule_idle_descent_steps_taken = 0
+
 
             while self.running: 
                 loop_start_time = time.monotonic()
@@ -952,28 +914,32 @@ class PowerManager(xAppBase):
                 if self.ru_timing_core_indices: self._update_ru_core_msr_data()
                 current_ru_cpu_usage_control_val = self._get_control_ru_timing_cpu_usage()
 
+                # Update current_tdp_w to reflect actual hardware state before any decisions
+                self.current_tdp_w = self._read_current_tdp_limit_w()
+
                 if loop_start_time - self.last_ru_pid_run_time >= self.ru_timing_pid_interval_s:
                     if self.ru_timing_core_indices: self._run_ru_timing_pid_step(current_ru_cpu_usage_control_val)
                     self.last_ru_pid_run_time = loop_start_time
                 
                 if loop_start_time - self.last_optimizer_run_time >= self.optimizer_decision_interval_s:
+                    # Refresh current_tdp_w again as PID might have acted
+                    self.current_tdp_w = self._read_current_tdp_limit_w()
+
                     interval_energy_uj = self._get_interval_energy_uj_for_optimizer()
-                    kpm_summed_data = self._get_and_reset_accumulated_kpm_metrics() # Summed DL/UL bits & PRB% per gNB
-                    current_num_active_ues, _ = self._get_and_reset_active_ue_count_and_data() # Resets per-UE data too
+                    kpm_summed_data = self._get_and_reset_accumulated_kpm_metrics()
+                    current_num_active_ues, _ = self._get_and_reset_active_ue_count_and_data()
                     self.current_num_active_ues_for_log = current_num_active_ues
 
-                    # Calculate system-wide totals for context
                     total_dl_bits_interval = sum(d.get('dl_bits', 0.0) for d in kpm_summed_data.values())
                     total_ul_bits_interval = sum(d.get('ul_bits', 0.0) for d in kpm_summed_data.values())
                     total_bits_optimizer_interval = total_dl_bits_interval + total_ul_bits_interval
                     
                     total_prb_dl_percentage = sum(d.get('dl_prb_sum_percentage', 0.0) for d in kpm_summed_data.values())
                     total_prb_ul_percentage = sum(d.get('ul_prb_sum_percentage', 0.0) for d in kpm_summed_data.values())
-
                     num_kpm_reports_processed = sum(d.get('reports_in_interval',0) for d in kpm_summed_data.values())
                     num_active_dus = sum(1 for d in kpm_summed_data.values() if d.get('dl_bits',0) + d.get('ul_bits',0) > 1e-6)
 
-                    significant_throughput_change = False # Logic for this remains same
+                    significant_throughput_change = False
                     if self.total_bits_from_previous_optimizer_interval is not None: 
                         denominator = self.total_bits_from_previous_optimizer_interval
                         if denominator < 1e-6: 
@@ -984,75 +950,108 @@ class PowerManager(xAppBase):
                             significant_throughput_change = True
                     self.total_bits_from_previous_optimizer_interval = total_bits_optimizer_interval
 
+                    # Determine effective TDP for reward calculation (the one bandit was aiming for unless PID overrode)
+                    # self.optimizer_target_tdp_w was set by the *previous* bandit action OR by PID.
+                    # self.current_tdp_w is the *actual* current HW TDP.
+                    # For reward, we should evaluate the consequence of the TDP that was *active* during the interval.
+                    # This is tricky if PID acts mid-interval or just before reward.
+                    # Let's use self.optimizer_target_tdp_w (what the system was set to at start of interval by CB/PID)
+                    # This `tdp_for_reward_eval` is the one set at the end of the *previous* optimizer step.
+                    tdp_for_reward_eval = self.optimizer_target_tdp_w
+
+
                     is_effectively_idle = current_num_active_ues == 0 and total_bits_optimizer_interval < (self.active_ue_throughput_threshold_mbps * 1e6 * self.optimizer_decision_interval_s / 10.0) 
                     
                     reward_for_bandit = 0.0
-                    if is_effectively_idle:
-                        # --- START NEW IDLE REWARD LOGIC ---
-                        idle_reward_scale = float(self.config.get('contextual_bandit', {}).get('idle_reward_scaling_factor', 1.0))
-                        decrease_bonus = float(self.config.get('contextual_bandit', {}).get('idle_decrease_action_bonus', 0.1))
-                        
-                        normalized_tdp_excursion = 0.0
-                        if (self.tdp_max_w - self.tdp_min_w) > 0.01: # Avoid division by zero if min ~== max
-                            normalized_tdp_excursion = (self.current_tdp_w - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w)
-                        normalized_tdp_excursion = max(0.0, min(1.0, normalized_tdp_excursion)) # Clamp to [0,1]
+                    action_description_for_log = "PrevActionN/A" # Default for logging
 
+                    if self.last_selected_arm_index is not None and \
+                        self.last_selected_arm_index < len(self.arm_keys_ordered) and \
+                        self.arm_keys_ordered:
+                        chosen_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
+                        action_delta_w = self.bandit_actions.get(chosen_arm_key, 0.0)
+                        action_description_for_log = f"PrevArm:{chosen_arm_key}({action_delta_w:+.0f}W)"
+                    else:
+                        action_delta_w = 0 # For reward calculation if no prior action
+                        action_description_for_log = "PrevActionUnknown"
+
+
+                    if is_effectively_idle:
+                        idle_reward_config = self.config.get('contextual_bandit', {}).get('idle_reward_logic', {})
+                        mode = idle_reward_config.get('mode', 'closeness_with_bonus') # Default to a known mode
+
+                        normalized_tdp_excursion = 0.0
+                        if (self.tdp_max_w - self.tdp_min_w) > 0.01:
+                             # Use tdp_for_reward_eval (the TDP that was active due to previous CB/PID decision)
+                            normalized_tdp_excursion = (tdp_for_reward_eval - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w)
+                        normalized_tdp_excursion = max(0.0, min(1.0, normalized_tdp_excursion))
                         closeness_to_min_tdp = 1.0 - normalized_tdp_excursion
 
-                        action_description_for_log = "PrevActionN/A" # For logging
-
-                        if self.last_selected_arm_index is not None and \
-                           self.last_selected_arm_index < len(self.arm_keys_ordered) and \
-                           self.arm_keys_ordered: # Ensure arm_keys_ordered is not empty
-                            
-                            chosen_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
-                            action_delta_w = self.bandit_actions.get(chosen_arm_key, 0.0)
-
-                            action_description_for_log = f"PrevArm:{chosen_arm_key}({action_delta_w:+.0f}W)"
+                        if mode == 'closeness_with_bonus': # Your previous good logic
+                            idle_reward_scale = float(idle_reward_config.get('scaling_factor', 1.0))
+                            decrease_bonus = float(idle_reward_config.get('decrease_action_bonus', 0.1))
+                            increase_penalty_val = float(idle_reward_config.get('increase_penalty_value', -1.0)) # e.g. -1.0
 
                             if action_delta_w > 0: # Increase action
-                                reward_for_bandit = -1.0 * idle_reward_scale
+                                reward_for_bandit = increase_penalty_val * idle_reward_scale
                             elif action_delta_w == 0: # Hold action
                                 reward_for_bandit = closeness_to_min_tdp * idle_reward_scale
-                            else: # Decrease action (action_delta_w < 0)
+                            else: # Decrease action
                                 reward_for_bandit = (closeness_to_min_tdp + decrease_bonus) * idle_reward_scale
-                                reward_for_bandit = min(reward_for_bandit, 1.0 * idle_reward_scale) # Cap
-                        else:
-                            # Fallback if no valid previous action (e.g., first optimizer step)
-                            # Bandit update is skipped anyway in this case by _run_contextual_bandit_optimizer_step
-                            # For logging consistency, use a neutral or old-style penalty.
-                            reward_for_bandit = -1.0 * normalized_tdp_excursion * idle_reward_scale 
-                            action_description_for_log = "PrevActionUnknown"
+                                reward_for_bandit = min(reward_for_bandit, 1.0 * idle_reward_scale) # Cap positive reward
                         
-                        self._log(INFO, f"CB Reward (Idle): For {action_description_for_log} -> ActualTDP={self.current_tdp_w:.1f}W "
+                        elif mode == 'strong_min_focus':
+                            min_tdp_bonus = float(idle_reward_config.get('min_tdp_bonus', 1.0))
+                            decrease_progress_bonus = float(idle_reward_config.get('decrease_progress_bonus', 0.2))
+                            hold_penalty_factor = float(idle_reward_config.get('hold_penalty_factor', 0.5)) # Penalty for holding above min
+                            increase_penalty = float(idle_reward_config.get('increase_penalty', -1.0))
+
+                            if abs(tdp_for_reward_eval - self.tdp_min_w) < 1.0: # At min TDP
+                                reward_for_bandit = min_tdp_bonus
+                            elif action_delta_w < 0: # Decrease action, not yet at min
+                                reward_for_bandit = closeness_to_min_tdp + decrease_progress_bonus
+                            elif action_delta_w == 0: # Hold action, above min
+                                reward_for_bandit = -1.0 * normalized_tdp_excursion * hold_penalty_factor
+                            else: # Increase action
+                                reward_for_bandit = increase_penalty
+                        else: # Fallback or default original penalty
+                            orig_idle_penalty_factor = float(self.config.get('contextual_bandit', {}).get('idle_tdp_penalty_factor', 1.0))
+                            orig_decrease_bonus = float(self.config.get('contextual_bandit', {}).get('idle_decrease_action_bonus_orig', 0.1))
+                            reward_for_bandit = -orig_idle_penalty_factor * normalized_tdp_excursion
+                            if action_delta_w < 0: reward_for_bandit += orig_decrease_bonus
+                            reward_for_bandit = min(reward_for_bandit, 0.0) # Original capping
+
+                        self._log(INFO, f"CB Reward (Idle, Mode: {mode}): {action_description_for_log} -> TargetTDP={tdp_for_reward_eval:.1f}W "
                                          f"(NormExcur={normalized_tdp_excursion:.2f}, CloseToMin={closeness_to_min_tdp:.2f}). "
                                          f"Reward={reward_for_bandit:.3f}")
-                        # --- END NEW IDLE REWARD LOGIC ---
+                        
+                        # Reset rule-based descent counter if bandit is making decisions in idle
+                        if not (enable_rule_based_idle_descent and self.current_tdp_w > rule_idle_descent_tdp_thresh and rule_idle_descent_steps_taken < rule_idle_descent_max_steps):
+                             rule_idle_descent_steps_taken = 0 
+
                     else: # Active traffic
+                        rule_idle_descent_steps_taken = 0 # Reset if active
+
                         current_raw_efficiency = 0.0
                         if num_kpm_reports_processed > 0 : 
                             if interval_energy_uj is not None and interval_energy_uj > 1e-3: 
                                 current_raw_efficiency = total_bits_optimizer_interval / interval_energy_uj
-                            elif total_bits_optimizer_interval > 1e-9: # High bits, negligible energy
+                            elif total_bits_optimizer_interval > 1e-9: 
                                 current_raw_efficiency = float('inf') 
-                            # else current_raw_efficiency is 0.0 if low bits and low/zero energy
                         
                         norm_eff_params = self.norm_params.get('efficiency_reward', {'min': 0.0, 'max': 5.0}) 
                         clamped_eff = current_raw_efficiency
-                        if math.isinf(current_raw_efficiency) and current_raw_efficiency > 0:
-                            clamped_eff = norm_eff_params['max'] # Give it the best possible efficiency score if inf
-                        elif math.isinf(current_raw_efficiency) and current_raw_efficiency < 0: # Should not happen
-                            clamped_eff = norm_eff_params['min']
+                        if math.isinf(current_raw_efficiency) and current_raw_efficiency > 0: clamped_eff = norm_eff_params['max']
+                        elif math.isinf(current_raw_efficiency) and current_raw_efficiency < 0: clamped_eff = norm_eff_params['min']
                         
-                        # Clamp before normalization
                         clamped_eff = max(norm_eff_params['min'], min(clamped_eff, norm_eff_params['max']))
                         normalized_efficiency = self._normalize_feature(clamped_eff, 'efficiency_reward')
-                        
                         reward_for_bandit = normalized_efficiency
                         self._log(INFO, f"CB Reward (Active): RawEff={current_raw_efficiency:.3f} b/uJ, ClampedEff={clamped_eff:.3f}, NormEff={normalized_efficiency:.3f}, FinalReward={reward_for_bandit:.3f}")
                     
                     self.most_recent_calculated_reward_for_log = reward_for_bandit
                     
+                    # Context for NEXT decision uses the CURRENT actual TDP
                     current_actual_tdp_for_context = self.current_tdp_w 
                     current_context_vec = self._get_current_context_vector(
                         total_dl_bits_interval, total_ul_bits_interval,
@@ -1060,8 +1059,28 @@ class PowerManager(xAppBase):
                         current_num_active_ues, num_active_dus,
                         current_ru_cpu_usage_control_val, current_actual_tdp_for_context
                     )
-                   
-                    self._run_contextual_bandit_optimizer_step(reward_for_bandit, current_context_vec, significant_throughput_change)
+
+                    # --- Rule-based idle descent logic ---
+                    perform_bandit_step = True
+                    if enable_rule_based_idle_descent and is_effectively_idle and \
+                       self.current_tdp_w > rule_idle_descent_tdp_thresh and \
+                       rule_idle_descent_steps_taken < rule_idle_descent_max_steps:
+                        
+                        perform_bandit_step = False # Rule overrides bandit for this step
+                        rule_idle_descent_steps_taken += 1
+                        new_rule_tdp = max(self.tdp_min_w, self.current_tdp_w - rule_idle_descent_step_w)
+                        self._log(INFO, f"RULE_IDLE_DESCENT: Active (Step {rule_idle_descent_steps_taken}/{rule_idle_descent_max_steps}). "
+                                        f"TDP {self.current_tdp_w:.1f}W > Thresh {rule_idle_descent_tdp_thresh:.1f}W. "
+                                        f"Forcing TDP to {new_rule_tdp:.1f}W.")
+                        self._set_tdp_limit_w(new_rule_tdp, context="Rule-Based Idle Descent")
+                        self.optimizer_target_tdp_w = self._read_current_tdp_limit_w()
+                        # Don't update bandit with this forced action, or clear last_selected_arm
+                        self.last_selected_arm_index = None 
+                        self.last_context_vector = None
+                    
+                    if perform_bandit_step:
+                        self._run_contextual_bandit_optimizer_step(reward_for_bandit, current_context_vec, significant_throughput_change)
+                    
                     self.last_optimizer_run_time = loop_start_time
                 
                 if loop_start_time - self.last_stats_print_time >= self.stats_print_interval_s:
@@ -1072,22 +1091,17 @@ class PowerManager(xAppBase):
                         ru_usage_str = f"[{', '.join(ru_usage_parts)}] (AvgMax:{current_ru_cpu_usage_control_val:>6.2f}%)"
                     pkg_pwr_log_str = f"{pkg_pwr_w:.1f}" if pkg_pwr_ok else "N/A"
                     
-                    # Using arm_keys_ordered for consistent indexing if bandit library uses integer indices
-                    last_arm_key_str = self.arm_keys_ordered[self.last_selected_arm_index] if self.last_selected_arm_index is not None else 'None'
-                    
-                    # Getting best arm from library might require different method if it doesn't track empirical means directly.
-                    # For now, this is a placeholder if library doesn't expose it easily.
-                    # best_emp_arm_idx, best_emp_eff = self.contextual_bandit_model.get_best_empirical_arm_stats() # Fictitious
-                    # best_emp_arm_key = self.arm_keys_ordered[best_emp_arm_idx] if best_emp_arm_idx is not None else "None"
-                    # For now, we don't have a direct equivalent from the library for "best empirical arm" easily.
+                    last_arm_key_str = "N/A"
+                    if self.last_selected_arm_index is not None and self.last_selected_arm_index < len(self.arm_keys_ordered):
+                         last_arm_key_str = self.arm_keys_ordered[self.last_selected_arm_index]
                     
                     bandit_log = (f"CB_Lib(LastArmIdx:{self.last_selected_arm_index if self.last_selected_arm_index is not None else 'N/A'}, "
                                   f"Key:{last_arm_key_str})")
                     
                     log_parts = [f"RU:{ru_usage_str}", f"TDP_Act:{self.current_tdp_w:>5.1f}W", 
                                  f"TDP_OptTrg:{self.optimizer_target_tdp_w:>5.1f}W", f"PkgPwr:{pkg_pwr_log_str}W", bandit_log]
-                    if self.most_recent_calculated_efficiency_for_log is not None:
-                         log_parts.append(f"IntEff:{self.most_recent_calculated_efficiency_for_log:.3f}b/uJ")
+                    if self.most_recent_calculated_reward_for_log is not None: # Use the unified variable
+                         log_parts.append(f"LastReward:{self.most_recent_calculated_reward_for_log:.3f}") # Changed log key
                     log_parts.append(f"ActiveUEs:{self.current_num_active_ues_for_log}")
 
                     self._log(INFO, " | ".join(log_parts)); 
@@ -1097,14 +1111,13 @@ class PowerManager(xAppBase):
                 sleep_time = max(0, self.main_loop_sleep_s - loop_duration)
                 if sleep_time > 0 : time.sleep(sleep_time)
 
-        # ... (except KeyboardInterrupt, SystemExit, etc. are THE SAME as before) ...
         except KeyboardInterrupt: self._log(INFO, "\nLoop interrupted (KeyboardInterrupt).")
         except SystemExit as e: self._log(INFO, f"Application exiting (SystemExit: {e})."); raise 
         except RuntimeError as e: self._log(ERROR, f"Critical runtime error in loop: {e}."); raise 
         except Exception as e: self._log(ERROR, f"\nUnexpected error in loop: {e}"); import traceback; self._log(ERROR, traceback.format_exc()); raise 
         finally: self._log(INFO, "--- Power Manager xApp run_power_management_xapp finished. ---")
 
-if __name__ == "__main__": # Same as before
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="EcoRAN Power Manager xApp with Contextual Bandit Optimizer")
     parser.add_argument("config_path", type=str, help="Path to YAML configuration file.")
     parser.add_argument("--http_server_port", type=int, default=8090, help="HTTP server port.")
@@ -1116,23 +1129,23 @@ if __name__ == "__main__": # Same as before
         signal.signal(signal.SIGINT, manager.signal_handler)
         signal.signal(signal.SIGTERM, manager.signal_handler)
         if hasattr(signal, 'SIGQUIT'): signal.signal(signal.SIGQUIT, manager.signal_handler)
-        manager._log(INFO, "Registered signal handlers from xAppBase.")
+        # manager._log(INFO, "Registered signal handlers from xAppBase.") # Already logged in superclass
         manager.run_power_management_xapp()
     except RuntimeError as e: 
         print(f"E: Critical error: {e}", file=sys.stderr)
-        if manager and hasattr(manager, '_log') and manager.logger.hasHandlers(): manager._log(ERROR, f"Critical error: {e}")
+        if manager and hasattr(manager, '_log') and hasattr(manager.logger, 'hasHandlers') and manager.logger.hasHandlers(): manager._log(ERROR, f"Critical error: {e}")
         sys.exit(1)
     except SystemExit as e: 
         code = e.code if e.code is not None else 0
         print(f"Application terminated with exit code: {code}", file=sys.stderr)
-        if manager and hasattr(manager, '_log') and manager.logger.hasHandlers(): manager._log(INFO, f"Application terminated (SystemExit: {code}).")
+        if manager and hasattr(manager, '_log') and hasattr(manager.logger, 'hasHandlers') and manager.logger.hasHandlers(): manager._log(INFO, f"Application terminated (SystemExit: {code}).")
         sys.exit(code) 
     except Exception as e:
         print(f"E: An unexpected error at top level: {e}", file=sys.stderr)
         import traceback; traceback.print_exc(file=sys.stderr)
-        if manager and hasattr(manager, '_log') and manager.logger.hasHandlers(): manager._log(ERROR, f"TOP LEVEL UNEXPECTED ERROR: {e}\n{traceback.format_exc()}")
+        if manager and hasattr(manager, '_log') and hasattr(manager.logger, 'hasHandlers') and manager.logger.hasHandlers(): manager._log(ERROR, f"TOP LEVEL UNEXPECTED ERROR: {e}\n{traceback.format_exc()}")
         sys.exit(1)
     finally:
         msg = "Application finished."
-        if manager and hasattr(manager, '_log') and manager.logger.hasHandlers(): manager._log(INFO, msg)
+        if manager and hasattr(manager, '_log') and hasattr(manager.logger, 'hasHandlers') and manager.logger.hasHandlers(): manager._log(INFO, msg)
         else: print(f"INFO: {msg} (logger may not be available).")
