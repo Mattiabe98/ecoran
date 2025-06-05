@@ -523,42 +523,62 @@ class PowerManager(xAppBase):
             self._log(ERROR, f"Exception writing TDP: {e}")
             raise RuntimeError(f"Exception setting TDP: {e}")
 
-    def _run_ru_timing_pid_step(self, current_ru_cpu_usage: float):
+      
+    def _run_ru_timing_pid_step(self, current_ru_cpu_usage: float): # No longer needs num_active_ues
         if not self.ru_timing_core_indices: return 
-
-        error = self.target_ru_cpu_usage - current_ru_cpu_usage  
-        abs_error = abs(error)
-        sensitivity_threshold = self.target_ru_cpu_usage * self.tdp_adj_sensitivity_factor
-        
-        if abs_error > sensitivity_threshold:
-            step_size = self.tdp_adj_step_w_large if abs_error > (sensitivity_threshold * self.adaptive_step_far_thresh_factor) else self.tdp_adj_step_w_small
-            tdp_change_w = -step_size if error > 0 else step_size
+    
+        # Only act if RU CPU is TOO HIGH
+        # Using a slightly more critical threshold than the CB's target for intervention
+        pid_critical_ru_cpu_trigger = self.target_ru_cpu_usage + (self.target_ru_cpu_usage * self.tdp_adj_sensitivity_factor * 0.5) # e.g., 99.5% + small margin
+        # Or a hardcoded critical like 99.7%
+        # pid_critical_ru_cpu_trigger = 99.7 
+    
+    
+        if current_ru_cpu_usage > pid_critical_ru_cpu_trigger:
+            # RU CPU is too high, PID must increase TDP to give headroom
+            # Use a determined step, could be small or large based on how far over
+            error_for_step_calc = pid_critical_ru_cpu_trigger - current_ru_cpu_usage # Will be negative
+            abs_error_for_step_calc = abs(error_for_step_calc)
+            
+            # Use a simplified step logic for this safety net
+            # For example, always use the large step for a quick reaction
+            tdp_change_w = self.tdp_adj_step_w_large 
+            # Or, more sophisticated:
+            # sensitivity_thresh_abs = self.target_ru_cpu_usage * self.tdp_adj_sensitivity_factor
+            # step_size_pid = self.tdp_adj_step_w_large if abs_error_for_step_calc > (sensitivity_thresh_abs * self.adaptive_step_far_thresh_factor) else self.tdp_adj_step_w_small
+            # tdp_change_w = step_size_pid
+    
+    
             new_target_tdp = self.current_tdp_w + tdp_change_w
-            ctx = (f"RU_PID: RU CPU {current_ru_cpu_usage:.2f}% (Target {self.target_ru_cpu_usage:.2f}%), "
-                   f"Error {error:.2f}%, TDP Change {tdp_change_w:.1f}W")
+            
+            ctx = (f"RU_PID_SAFETY_NET: RU CPU {current_ru_cpu_usage:.2f}% > Trigger {pid_critical_ru_cpu_trigger:.2f}%. "
+                   f"Forcing TDP Increase by {tdp_change_w:.1f}W")
             self._set_tdp_limit_w(new_target_tdp, context=ctx)
-
-    def _run_contextual_bandit_optimizer_step(self, current_efficiency_bits_per_uj: Optional[float],
+        # else:
+            # self._log(DEBUG_ALL, f"RU_PID_SAFETY_NET: RU CPU {current_ru_cpu_usage:.2f}% <= Trigger {pid_critical_ru_cpu_trigger:.2f}%. No PID action.")
+            # PID does nothing if RU CPU is not critically high. CB is responsible for decreases.
+    
+    def _run_contextual_bandit_optimizer_step(self, current_reward_for_bandit: Optional[float],
                                              current_context_vector: Optional[np.array],
                                              significant_throughput_change: bool):
         # 1. Update bandit with the reward from the PREVIOUS action (if any valid data)
         if self.last_selected_arm_index is not None and self.last_context_vector is not None:
             if significant_throughput_change:
                 self._log(WARN, f"CB Lib: Skipping update for arm_idx '{self.last_selected_arm_index}' due to sig. throughput change.")
-            elif current_efficiency_bits_per_uj is not None and math.isfinite(current_efficiency_bits_per_uj) and not math.isnan(current_efficiency_bits_per_uj):
+            elif current_reward_for_bandit is not None and math.isfinite(current_reward_for_bandit) and not math.isnan(current_reward_for_bandit):
                 try:
                     X_update = self.last_context_vector.reshape(1, -1)
                     action_update = np.array([self.last_selected_arm_index], dtype=int) # Ensure dtype is int
-                    reward_update = np.array([current_efficiency_bits_per_uj])
+                    reward_update = np.array([current_reward_for_bandit])
 
                     self.contextual_bandit_model.fit(X_update, action_update, reward_update)
                     
                     last_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
-                    self._log(INFO, f"CB Lib: Updated ArmIdx '{self.last_selected_arm_index}' (Key: {last_arm_key}) with reward {current_efficiency_bits_per_uj:.3f}.")
+                    self._log(INFO, f"CB Lib: Updated ArmIdx '{self.last_selected_arm_index}' (Key: {last_arm_key}) with reward {current_reward_for_bandit:.3f}.")
                 except Exception as e:
                     self._log.error(f"CB Lib: Error during model fit/update: {e}")
             else:
-                self._log(WARN, f"CB Lib: Invalid efficiency ({current_efficiency_bits_per_uj}) for arm_idx '{self.last_selected_arm_index}'. Skipping update.")
+                self._log(WARN, f"CB Lib: Invalid efficiency ({current_reward_for_bandit}) for arm_idx '{self.last_selected_arm_index}'. Skipping update.")
         
         # 2. Select new arm
         selected_arm_index = 0  # Default to first arm if errors occur
@@ -964,13 +984,42 @@ class PowerManager(xAppBase):
                             significant_throughput_change = True
                     self.total_bits_from_previous_optimizer_interval = total_bits_optimizer_interval
 
-                    current_efficiency_for_bandit: Optional[float] = None
-                    if num_kpm_reports_processed > 0 : 
-                        if interval_energy_uj is not None and interval_energy_uj > 1e-3: 
-                            current_efficiency_for_bandit = total_bits_optimizer_interval / interval_energy_uj
-                        elif total_bits_optimizer_interval > 1e-9: current_efficiency_for_bandit = float('inf') 
-                        else: current_efficiency_for_bandit = 0.0
-                    self.most_recent_calculated_efficiency_for_log = current_efficiency_for_bandit
+                    is_effectively_idle = current_num_active_ues == 0 and total_bits_optimizer_interval < (self.active_ue_throughput_threshold_mbps * 1e6 * self.optimizer_decision_interval_s / 10) # Idle if no active UEs AND very low total bits
+                    # (the /10 for total_bits is a heuristic to ensure it's truly near zero, not just one UE with tiny data)
+                    
+                    reward_for_bandit = 0.0
+                    if is_effectively_idle:
+                        idle_penalty_factor = float(self.config.get('contextual_bandit', {}).get('idle_tdp_penalty_factor', 1.0))
+                        # Normalized TDP: 0 at min_tdp, 1 at max_tdp
+                        normalized_tdp_excursion = 0.0
+                        if (self.tdp_max_w - self.tdp_min_w) > 0:
+                            normalized_tdp_excursion = (self.current_tdp_w - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w)
+                        
+                        reward_for_bandit = -idle_penalty_factor * max(0, normalized_tdp_excursion) # Max reward 0 at min_tdp, more negative for higher TDP
+                        self._log(INFO, f"CB Reward (Idle): ActualTDP={self.current_tdp_w:.1f}W. Reward={reward_for_bandit:.3f}")
+                    else: # Active traffic
+                        current_raw_efficiency = 0.0
+                        if num_kpm_reports_processed > 0 : 
+                            if interval_energy_uj is not None and interval_energy_uj > 1e-3: 
+                                current_raw_efficiency = total_bits_optimizer_interval / interval_energy_uj
+                            elif total_bits_optimizer_interval > 1e-9: current_raw_efficiency = float('inf') 
+                        
+                        norm_eff_params = self.norm_params.get('efficiency_reward', {'min': 0.0, 'max': 5.0}) 
+                        clamped_eff = max(norm_eff_params['min'], min(current_raw_efficiency, norm_eff_params['max']))
+                        if math.isinf(current_raw_efficiency) and current_raw_efficiency > 0:
+                            clamped_eff = norm_eff_params['max']
+                    
+                        normalized_efficiency = self._normalize_feature(clamped_eff, 'efficiency_reward')
+                        
+                        # Optional: Add small power penalty during active traffic too, if desired
+                        # avg_power_watts_interval = (interval_energy_uj / 1e6) / self.optimizer_decision_interval_s if interval_energy_uj and self.optimizer_decision_interval_s > 0 else 0
+                        # normalized_power = self._normalize_feature(avg_power_watts_interval, 'package_power')
+                        # reward_for_bandit = normalized_efficiency - (self.reward_weight_power * normalized_power)
+                        reward_for_bandit = normalized_efficiency # Simplest for active: just normalized efficiency
+                    
+                        self._log(INFO, f"CB Reward (Active): RawEff={current_raw_efficiency:.3f} b/uJ, NormEff={normalized_efficiency:.3f}, Reward={reward_for_bandit:.3f}")
+                    
+                    self.most_recent_calculated_reward_for_log = reward_for_bandit
                     
                     current_actual_tdp_for_context = self.current_tdp_w 
                     current_context_vec = self._get_current_context_vector(
@@ -979,8 +1028,8 @@ class PowerManager(xAppBase):
                         current_num_active_ues, num_active_dus,
                         current_ru_cpu_usage_control_val, current_actual_tdp_for_context
                     )
-                    
-                    self._run_contextual_bandit_optimizer_step(current_efficiency_for_bandit, current_context_vec, significant_throughput_change)
+                   
+                    self._run_contextual_bandit_optimizer_step(reward_for_bandit, current_context_vec, significant_throughput_change)
                     self.last_optimizer_run_time = loop_start_time
                 
                 if loop_start_time - self.last_stats_print_time >= self.stats_print_interval_s:
