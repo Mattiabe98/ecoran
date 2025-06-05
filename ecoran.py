@@ -145,28 +145,42 @@ class PowerManager(xAppBase):
         cb_config = self.config.get('contextual_bandit', {})
         bandit_actions_w_str = cb_config.get('actions_tdp_delta_w', {"dec_10": -10.0, "dec_5": -5.0, "hold": 0.0, "inc_5": 5.0, "inc_10": 10.0})
         self.bandit_actions: Dict[str, float] = {k: float(v) for k, v in bandit_actions_w_str.items()}
-        self.arm_keys_ordered = list(self.bandit_actions.keys()) # Need a fixed order for library
-        if "hold" not in self.bandit_actions: # Ensure 'hold' exists
+        self.arm_keys_ordered = list(self.bandit_actions.keys()) 
+        if "hold" not in self.bandit_actions:
             self.bandit_actions["hold"] = 0.0
             if "hold" not in self.arm_keys_ordered: self.arm_keys_ordered.append("hold")
         
-        self.context_dimension_features_only_features_only = int(cb_config.get('context_dimension_features_only_features_only', 8)) # e.g., 8 actual features
-        self.linucb_alpha = float(cb_config.get('alpha', 1.0))
-        self.linucb_lambda_ = float(cb_config.get('lambda_reg', 0.1)) # Renamed to match library param
-        self.linucb_fit_intercept = bool(cb_config.get('fit_intercept', True)) # Let library handle intercept
-    
+        # THIS IS THE KEY ATTRIBUTE for number of features we prepare (excluding bias if lib handles it)
+        self.context_dimension_features_only = int(cb_config.get('context_dimension_features_only', 8)) 
+        self.linucb_alpha = float(cb_config.get('alpha', 1.0)) 
+        self.linucb_lambda_ = float(cb_config.get('lambda_', 0.1)) 
+        self.linucb_fit_intercept = bool(cb_config.get('fit_intercept', True)) # Default to True
+
+        self._log(INFO, f"Initializing LinUCB with nchoices={len(self.arm_keys_ordered)}, alpha={self.linucb_alpha}, lambda_={self.linucb_lambda_}, fit_intercept={self.linucb_fit_intercept}")
+        
+        # The library's LinUCB infers ndim from data.
+        # If fit_intercept is True, library handles bias, pass ndim as actual feature count.
+        # If fit_intercept is False, we add bias, so ndim passed to library is feature_count + 1.
+        ndim_for_lib_init = self.context_dimension_features_only
+        if not self.linucb_fit_intercept:
+            ndim_for_lib_init +=1 # We will be adding a bias term manually
+
         self.contextual_bandit_model = LinUCB(
             nchoices=len(self.arm_keys_ordered),
             alpha=self.linucb_alpha,
-            lambda_=self.linucb_lambda_, # Use lambda_
-            fit_intercept=self.linucb_fit_intercept)
+            lambda_=self.linucb_lambda_,
+            fit_intercept=self.linucb_fit_intercept 
+            # Note: The library's LinUCB does NOT take 'ndim' as a constructor argument.
+            # It infers it. My previous manual LinUCB did.
+            # The `ndim` parameter in some contextualbandits policies is for the *internal representation*
+            # and might be used differently. For LinUCB from this library, we don't pass it at init.
+        )
         self.optimizer_target_tdp_w = self.current_tdp_w
-        self.last_selected_arm_index: Optional[int] = None # Library might use index
+        self.last_selected_arm_index: Optional[int] = None
         self.last_context_vector: Optional[np.array] = None
         self.total_bits_from_previous_optimizer_interval: Optional[float] = None
         self.throughput_change_threshold_for_discard = float(cb_config.get('throughput_change_threshold_for_discard', 1.0))
         self.active_ue_throughput_threshold_mbps = float(cb_config.get('active_ue_throughput_threshold_mbps', 1.0))
-
 
         self.norm_params = cb_config.get('normalization_parameters', {})
         self._ensure_default_norm_params()
@@ -897,8 +911,7 @@ class PowerManager(xAppBase):
             self._log(INFO, f"RU PID Interval: {self.ru_timing_pid_interval_s}s | Target RU CPU: {self.target_ru_cpu_usage if self.ru_timing_core_indices else 'N/A'}%")
             self._log(INFO, f"CB Optimizer Interval: {self.optimizer_decision_interval_s}s | TDP Range: {self.tdp_min_w}W-{self.tdp_max_w}W")
             self._log(INFO, f"CB Actions: {self.bandit_actions}, Alpha: {self.linucb_alpha}")
-            self._log(INFO, f"CB Context Dim: {self.context_dimension_features_only}. ActiveUE Thresh: {self.active_ue_throughput_threshold_mbps} Mbps.")
-            self._log(INFO, f"Stats Print Interval: {self.stats_print_interval_s}s")
+            self._log(INFO, f"CB Context Dim (features only): {self.context_dimension_features_only}, FitIntercept: {self.linucb_fit_intercept}. ActiveUE Thresh: {self.active_ue_throughput_threshold_mbps} Mbps.")            self._log(INFO, f"Stats Print Interval: {self.stats_print_interval_s}s")
 
             while self.running: 
                 loop_start_time = time.monotonic()
