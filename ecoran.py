@@ -155,7 +155,9 @@ class PowerManager(xAppBase):
         self.linucb_alpha = float(cb_config.get('alpha', 1.0)) 
         self.linucb_lambda_ = float(cb_config.get('lambda_', 0.1)) 
         self.linucb_fit_intercept = bool(cb_config.get('fit_intercept', True)) # Default to True
-
+        self.linucb_ucb_from_empty = bool(cb_config.get('ucb_from_empty', False)) 
+        beta_prior_config = cb_config.get('beta_prior', "auto") 
+        
         self._log(INFO, f"Initializing LinUCB with nchoices={len(self.arm_keys_ordered)}, alpha={self.linucb_alpha}, lambda_={self.linucb_lambda_}, fit_intercept={self.linucb_fit_intercept}")
         
         # The library's LinUCB infers ndim from data.
