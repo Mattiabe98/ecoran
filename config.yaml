@@ -51,8 +51,8 @@ kpm_subscriptions:
     # "RRU.PRBUsedUL"
   ]
 
-  style4_report_period_ms: 5000 # Changed from 5000 to 1000 as per your last working example
-  style4_granularity_period_ms: 5000 # Changed from 5000 to 1000
+  style4_report_period_ms: 1000 # Changed from 5000 to 1000 as per your last working example
+  style4_granularity_period_ms: 1000 # Changed from 5000 to 1000
 
 contextual_bandit:
   # ... other bandit params
