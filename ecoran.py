@@ -45,7 +45,7 @@ LOGGING_LEVEL_MAP = {
 
 # --- Context Feature Indices (Ensure this matches _get_current_context_vector order) ---
 # This definition helps in understanding the context vector but is not strictly enforced by index in code below.
-# The order in _get_current_context_vector and the configured context_dimension are key.
+# The order in _get_current_context_vector and the configured context_dimension_features_only are key.
 # CTX_IDX_BIAS = 0
 # CTX_IDX_TOTAL_BITS_DL_NORM = 1
 # CTX_IDX_TOTAL_BITS_UL_NORM = 2
@@ -55,7 +55,7 @@ LOGGING_LEVEL_MAP = {
 # CTX_IDX_NUM_ACTIVE_DUS_NORM = 6
 # CTX_IDX_RU_CPU_NORM = 7
 # CTX_IDX_CURRENT_TDP_NORM = 8
-# CONTEXT_DIMENSION would be 9 with these features
+# context_dimension_features_only would be 9 with these features
 
 def read_msr_direct(cpu_id: int, reg: int) -> Optional[int]: # Same as before
     try:
@@ -150,7 +150,7 @@ class PowerManager(xAppBase):
             self.bandit_actions["hold"] = 0.0
             if "hold" not in self.arm_keys_ordered: self.arm_keys_ordered.append("hold")
         
-        self.context_dimension_features_only = int(cb_config.get('context_dimension_features_only', 8)) # e.g., 8 actual features
+        self.context_dimension_features_only_features_only = int(cb_config.get('context_dimension_features_only_features_only', 8)) # e.g., 8 actual features
         self.linucb_alpha = float(cb_config.get('alpha', 1.0))
         self.linucb_lambda_ = float(cb_config.get('lambda_reg', 0.1)) # Renamed to match library param
         self.linucb_fit_intercept = bool(cb_config.get('fit_intercept', True)) # Let library handle intercept
@@ -253,13 +253,13 @@ class PowerManager(xAppBase):
             'current_tdp'
         ]
     
-        # The configured self.context_dimension_features_only should match len(feature_values_ordered)
-        if len(feature_values_ordered) != self.context_dimension_features_only:
+        # The configured self.context_dimension_features_only_features_only should match len(feature_values_ordered)
+        if len(feature_values_ordered) != self.context_dimension_features_only_features_only:
             self._log(ERROR, f"Number of actual features ({len(feature_values_ordered)}) "
-                             f"does not match configured context_dimension_features_only ({self.context_dimension_features_only}). "
+                             f"does not match configured context_dimension_features_only_features_only ({self.context_dimension_features_only_features_only}). "
                              "Check feature list and config.")
             # Fallback to avoid crash, but this indicates a config/code mismatch
-            return np.ones(self.context_dimension_features_only) * 0.5 
+            return np.ones(self.context_dimension_features_only_features_only) * 0.5 
     
         normalized_features = np.array([
             self._normalize_feature(val, key) for val, key in zip(feature_values_ordered, feature_keys_ordered)
@@ -897,7 +897,7 @@ class PowerManager(xAppBase):
             self._log(INFO, f"RU PID Interval: {self.ru_timing_pid_interval_s}s | Target RU CPU: {self.target_ru_cpu_usage if self.ru_timing_core_indices else 'N/A'}%")
             self._log(INFO, f"CB Optimizer Interval: {self.optimizer_decision_interval_s}s | TDP Range: {self.tdp_min_w}W-{self.tdp_max_w}W")
             self._log(INFO, f"CB Actions: {self.bandit_actions}, Alpha: {self.linucb_alpha}")
-            self._log(INFO, f"CB Context Dim: {self.context_dimension}. ActiveUE Thresh: {self.active_ue_throughput_threshold_mbps} Mbps.")
+            self._log(INFO, f"CB Context Dim: {self.context_dimension_features_only}. ActiveUE Thresh: {self.active_ue_throughput_threshold_mbps} Mbps.")
             self._log(INFO, f"Stats Print Interval: {self.stats_print_interval_s}s")
 
             while self.running: 
