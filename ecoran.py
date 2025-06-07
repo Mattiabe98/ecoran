@@ -145,6 +145,25 @@ class PowerManager(xAppBase):
         lints_random_state_cfg = cb_config.get('random_state', None)
         self.lints_random_state = int(lints_random_state_cfg) if lints_random_state_cfg is not None else None
 
+        # Create LinTS Beta Prior
+        
+        beta_prior_config = cb_config.get('beta_prior', None)
+        self.lints_beta_prior = None # Default
+        if isinstance(beta_prior_config, str):
+            if beta_prior_config == "auto":
+                self.lints_beta_prior = "auto"
+            elif beta_prior_config == "uniform_optimistic":
+                # This creates the ((a,b), n) tuple correctly in Python
+                # It means: for any arm with < 3 observations, sample its
+                # reward from a Beta(1,1) distribution (a uniform random number).
+                self.lints_beta_prior = ((1, 1), 3) 
+                self._log(INFO, "Using 'uniform_optimistic' Beta(1,1) prior.")
+        elif beta_prior_config is not None:
+             # If you ever want to pass the complex structure directly from YAML
+             # it should be loaded here, but this is less safe.
+             self.lints_beta_prior = beta_prior_config
+
+        self.lints_smoothing = cb_config.get('smoothing', None)
 
         self._log(INFO, f"Initializing LinTS with nchoices={len(self.arm_keys_ordered)}, "
                         f"lambda_={self.lints_lambda_}, fit_intercept={self.lints_fit_intercept}, "
