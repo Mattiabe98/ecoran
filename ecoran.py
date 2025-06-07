@@ -974,17 +974,17 @@ class PowerManager(xAppBase):
                         chosen_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
                         action_delta_w = self.bandit_actions.get(chosen_arm_key, 0.0)
 
-                    # --- HIERARCHY 1: The PID trigger is the ultimate failure signal ---
+                    # --- HIERARCHY 1: The PID trigger is a special event ---
                     if self.pid_triggered_since_last_decision:
                         self.pid_triggered_since_last_decision = False
                         if action_delta_w <= 0:
                             reward_for_bandit = -1.0
                             self._log(WARN, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was wrong. Final Reward={reward_for_bandit:.3f}")
-                        else:
-                            reward_for_bandit = 0.1
+                        else: # action_delta_w > 0
+                            reward_for_bandit = 0.1 # Keep this simple bonus for the emergency override case
                             self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying incentive bonus. Final Reward={reward_for_bandit:.3f}")
 
-                    # --- HIERARCHY 2: If no PID, evaluate based on the system state ---
+                    # --- HIERARCHY 2: If no PID, is the CPU STRESSED? ---
                     elif cpu_usage > (self.target_ru_cpu_usage * 0.99):
                         # --- STRESSED STATE ---
                         if action_delta_w > 0:
@@ -995,45 +995,48 @@ class PowerManager(xAppBase):
                             reward_for_bandit = -np.clip(penalty_progress, 0, 1)
                         self._log(INFO, f"CB Reward (Stressed): CPU at {cpu_usage:.2f}%. Action '{chosen_arm_key}'. Final Reward={reward_for_bandit:.3f}")
 
+                    # --- HIERARCHY 3: If not stressed, THEN check for UEs ---
                     elif is_active_ue_present:
                         # --- ACTIVE & HEALTHY STATE ---
                         current_raw_efficiency = 0.0
                         if num_kpm_reports_processed > 0 and interval_energy_uj is not None and interval_energy_uj > 1e-3:
                             current_raw_efficiency = total_bits_optimizer_interval / interval_energy_uj
                         
-                        # Adaptive Normalization
                         self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
                         normalized_efficiency = current_raw_efficiency / self.max_efficiency_seen if self.max_efficiency_seen > 0 else 0.0
                         
-                        # Stability Bonus for 'hold'
-                        stability_bonus = 0.0
-                        if action_delta_w == 0:
-                            # Reward holding, especially if efficiency is already high
-                            stability_bonus = 0.1 * normalized_efficiency
-                        
-                        reward_for_bandit = normalized_efficiency + stability_bonus
-                        self._log(INFO, f"CB Reward (Active/Healthy): NormEff={normalized_efficiency:.3f} (MaxSeen={self.max_efficiency_seen:.3f}), StabilityBonus={stability_bonus:.3f}. Final Reward={reward_for_bandit:.3f}")
+                        reward_for_bandit = normalized_efficiency
+                        self._log(INFO, f"CB Reward (Active/Healthy): NormEff={normalized_efficiency:.3f} (MaxSeen={self.max_efficiency_seen:.3f}). Final Reward={reward_for_bandit:.3f}")
                     
                     else: # Not stressed and no active UEs
-                        # --- TRUE IDLE STATE ---
-                        idle_reward_config = self.config.get('contextual_bandit', {}).get('idle_reward_logic', {})
-                        normalized_tdp_excursion = (tdp_for_reward_eval - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w) if (self.tdp_max_w - self.tdp_min_w) > 0 else 0
+                        # --- TRUE IDLE STATE (with Holding Zone) ---
+                        holding_zone_width_w = 5.0 # TUNABLE: How close to min is "good enough"
+
+                        # Are we inside the holding zone?
+                        if tdp_for_reward_eval <= (self.tdp_min_w + holding_zone_width_w):
+                            # GOAL: Stay here. 'hold' is the best action.
+                            if action_delta_w == 0:
+                                reward_for_bandit = 1.0 # Max reward for stability
+                            elif action_delta_w < 0:
+                                reward_for_bandit = 0.2 # Decreasing further is okay, but risky and less rewarded
+                            else: # action_delta_w > 0
+                                reward_for_bandit = -1.0 # Increasing is wrong
+                            self._log(INFO, f"CB Reward (Idle - In Holding Zone): Action '{chosen_arm_key}'. Final Reward={reward_for_bandit:.3f}")
                         
-                        # Give a small bonus for holding at the minimum TDP
-                        if abs(tdp_for_reward_eval - self.tdp_min_w) < 1.0 and action_delta_w == 0:
-                            reward_for_bandit = float(idle_reward_config.get('min_tdp_bonus', 1.0))
-                        elif action_delta_w < 0:
-                            reward_for_bandit = (1.0 - normalized_tdp_excursion) + float(idle_reward_config.get('decrease_progress_bonus', 0.3))
-                        elif action_delta_w == 0: # Holding above min TDP
-                            reward_for_bandit = -1.0 * normalized_tdp_excursion * float(idle_reward_config.get('hold_penalty_factor', 0.7))
-                        else: # increase action
-                            reward_for_bandit = float(idle_reward_config.get('increase_penalty', -1.0))
-                        
-                        self._log(INFO, f"CB Reward (True Idle): Final Reward={reward_for_bandit:.3f}")
+                        else: # We are outside the holding zone
+                            # GOAL: Get to the holding zone. 'decrease' is the best action.
+                            if action_delta_w < 0:
+                                # Proportional reward for making progress
+                                normalized_tdp_excursion = (tdp_for_reward_eval - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w) if (self.tdp_max_w - self.tdp_min_w) > 0 else 0
+                                reward_for_bandit = 0.5 * (1.0 - normalized_tdp_excursion) + 0.3 # Base progress + bonus
+                            elif action_delta_w == 0:
+                                reward_for_bandit = 0.0 # Holding is neutral, not penalized but not rewarded
+                            else: # action_delta_w > 0
+                                reward_for_bandit = -1.0 # Increasing is wrong
+                            self._log(INFO, f"CB Reward (Idle - Outside Holding Zone): Action '{chosen_arm_key}'. Final Reward={reward_for_bandit:.3f}")
 
                     # Final clipping as a safety net
                     reward_for_bandit = np.clip(reward_for_bandit, -1.0, 1.0)
-
 
                     # Consume the flag after the if/else block, ensuring it's always reset
                     if self.pid_triggered_since_last_decision:
