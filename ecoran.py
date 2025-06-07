@@ -1015,7 +1015,7 @@ class PowerManager(xAppBase):
                     if current_num_active_ues == 0:
                         # Penalty is a tiny fraction of how far TDP is from the minimum.
                         # This creates the gentle "downward pressure" when idle.
-                        idle_penalty_weight = 0.1 # TUNABLE: How strong the downward pressure is.
+                        idle_penalty_weight = 0.2 # TUNABLE: How strong the downward pressure is.
                         normalized_tdp = _normalize(self.current_tdp_w, self.tdp_min_w, self.tdp_max_w)
                         idle_tdp_penalty = idle_penalty_weight * normalized_tdp
 
