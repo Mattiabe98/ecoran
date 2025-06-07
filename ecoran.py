@@ -972,7 +972,24 @@ class PowerManager(xAppBase):
                         
                         # Use tdp_for_reward_eval (the TDP that was active due to previous CB/PID decision)
                         tdp_for_reward_eval = self.optimizer_target_tdp_w 
-                        
+
+                        pid_penalty = 0.0
+                        if self.pid_triggered_since_last_decision:
+                            action_delta_w = 0.0
+                            if self.last_selected_arm_index is not None and self.arm_keys_ordered:
+                                chosen_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
+                                action_delta_w = self.bandit_actions.get(chosen_arm_key, 0.0)
+                            
+                            if action_delta_w <= 0: # Punish dec/hold if PID triggered
+                                pid_penalty = 1.0 
+                                self._log(WARN, f"CB REWARD (Idle): PID triggered after '{chosen_arm_key}'. Applying penalty.")
+                            else: # Don't punish an increase action
+                                pid_penalty = 0.0
+                                self._log(INFO, f"CB REWARD (Idle): PID triggered after '{chosen_arm_key}', but no penalty applied.")
+                            
+                            # --- RESET THE FLAG HERE ---
+                            self.pid_triggered_since_last_decision = False
+                            
                         action_delta_w = 0.0
                         if self.last_selected_arm_index is not None and self.arm_keys_ordered:
                             chosen_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
