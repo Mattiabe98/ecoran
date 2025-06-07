@@ -1020,12 +1020,6 @@ class PowerManager(xAppBase):
 
                     # 4. Calculate the Final Reward using the Unified Formula
                     reward_for_bandit = (normalized_efficiency * risk_factor) + idle_modifier
-                    
-                    # Apply an escape bonus if the agent is trying to leave a high-stress state but efficiency is zero
-                    if is_active_ue_present and reward_for_bandit > -1e-6 and reward_for_bandit < 1e-6 and cpu_usage > danger_zone_start and action_delta_w > 0:
-                        reward_for_bandit = 0.1
-                        self._log(INFO, f"CB REWARD: Applying escape bonus for correct action with zero efficiency.")
-
                     reward_for_bandit = np.clip(reward_for_bandit, -1.0, 1.0)
 
                     self._log(INFO, f"CB Reward: NormEff={normalized_efficiency:.3f}, RiskFactor={risk_factor:.2f}, IdleModifier={idle_modifier:.3f}. FINAL REWARD={reward_for_bandit:.3f}")
