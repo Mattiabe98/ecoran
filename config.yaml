@@ -68,7 +68,7 @@ contextual_bandit:
   v_sq: 0.25             # Variance scaling for Thompson Sampling. Smaller = less exploration. Try values like 0.01, 0.05, 0.1, 0.25. Default in lib is 1.0.
   sample_from: "coef"    # "coef" or "ci"
   method: "sm"         # "chol" or "sm"
-  beta_prior: "auto"     # "auto", null (None in Python), or specific tuple e.g. [[0.5, 2], 2]
+  beta_prior: [[1, 1], 3]     # "auto", null (None in Python), or specific tuple e.g. [[0.5, 2], 2]
   smoothing: null        # null (None in Python) or tuple e.g. [1, 20]
   random_state: 42       # Integer for reproducibility, or null for random
 
