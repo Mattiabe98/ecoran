@@ -971,28 +971,25 @@ class PowerManager(xAppBase):
                         current_raw_efficiency = total_bits_optimizer_interval / interval_energy_uj
                     
                     norm_eff_params = self.config.get('contextual_bandit', {}).get('normalization_parameters', {}).get('efficiency_reward', {'min': 0.0, 'max': 5.0})
-                    # Use a local _normalize function for clarity, or call self._normalize_feature
                     def _normalize(val, min_val, max_val):
-                        if (max_val - min_val) == 0: return 0.5
+                        if (max_val - min_val) < 1e-6: return 0.5
                         return np.clip((val - min_val) / (max_val - min_val), 0.0, 1.0)
-
                     normalized_efficiency = _normalize(current_raw_efficiency, norm_eff_params.get('min', 0.0), norm_eff_params.get('max', 5.0))
 
                     # 2. Calculate the Risk Factor (a multiplier from 1.0 down to 0.0)
                     risk_factor = 1.0
                     
-                    # Get last action info
                     action_delta_w = 0.0
                     chosen_arm_key = "N/A"
                     if self.last_selected_arm_index is not None and self.arm_keys_ordered:
                         chosen_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
                         action_delta_w = self.bandit_actions.get(chosen_arm_key, 0.0)
 
-                    # PID Trigger is the highest risk - sets risk factor to 0 if action was bad
+                    # PID Trigger is the highest risk - nullifies reward if action was bad
                     if self.pid_triggered_since_last_decision:
                         self.pid_triggered_since_last_decision = False # Consume flag
                         if action_delta_w <= 0:
-                            risk_factor = 0.0 # Nullify any reward
+                            risk_factor = 0.0
                             self._log(WARN, f"CB REWARD: PID triggered after '{chosen_arm_key}'. Risk Factor set to 0.")
                         else:
                             self._log(INFO, f"CB REWARD: PID triggered after '{chosen_arm_key}', but action was correct. No risk penalty.")
@@ -1003,29 +1000,35 @@ class PowerManager(xAppBase):
                     
                     if cpu_usage > danger_zone_start:
                         if action_delta_w <= 0:
-                            # Calculate a discount based on how deep we are in the danger zone
                             penalty_progress = (cpu_usage - danger_zone_start) / (self.target_ru_cpu_usage - danger_zone_start)
-                            discount = np.clip(penalty_progress, 0, 1)
-                            risk_factor = min(risk_factor, 1.0 - discount) # Apply the discount
+                            discount = np.clip(penalty_progress, 0, 1) # Linear discount
+                            risk_factor = min(risk_factor, 1.0 - discount)
                             self._log(WARN, f"CB REWARD: CPU in danger zone ({cpu_usage:.2f}%) after '{chosen_arm_key}'. Risk Factor discounted to {risk_factor:.2f}.")
 
-                    # 3. Calculate the Idle TDP Penalty (only active when there's no efficiency)
-                    idle_tdp_penalty = 0.0
-                    # This check is key: if there's no traffic, push towards min TDP.
+                    # 3. Calculate the Symmetrical Idle Reward/Penalty Modifier
+                    idle_modifier = 0.0
                     if current_num_active_ues == 0:
-                        # Penalty is a tiny fraction of how far TDP is from the minimum.
-                        # This creates the gentle "downward pressure" when idle.
-                        idle_penalty_weight = 0.2 # TUNABLE: How strong the downward pressure is.
                         normalized_tdp = _normalize(self.current_tdp_w, self.tdp_min_w, self.tdp_max_w)
-                        idle_tdp_penalty = idle_penalty_weight * normalized_tdp
+                        
+                        if action_delta_w < 0: # GOOD: Trying to decrease TDP
+                            # Reward is proportional to how much there is to gain
+                            idle_modifier = 0.2 * (1.0 - normalized_tdp) # Small positive reward
+                        elif action_delta_w > 0: # BAD: Trying to increase TDP
+                            idle_modifier = -0.5 # Strong penalty
+                        else: # NEUTRAL/BAD: Holding at a high TDP
+                            idle_modifier = -0.1 * normalized_tdp # Small penalty for not making progress
 
                     # 4. Calculate the Final Reward using the Unified Formula
-                    reward_for_bandit = (normalized_efficiency * risk_factor) - idle_tdp_penalty
+                    reward_for_bandit = (normalized_efficiency * risk_factor) + idle_modifier
                     
-                    # Final clipping is still a good safety measure
+                    # Apply an escape bonus if the agent is trying to leave a high-stress state but efficiency is zero
+                    if is_active_ue_present and reward_for_bandit > -1e-6 and reward_for_bandit < 1e-6 and cpu_usage > danger_zone_start and action_delta_w > 0:
+                        reward_for_bandit = 0.1
+                        self._log(INFO, f"CB REWARD: Applying escape bonus for correct action with zero efficiency.")
+
                     reward_for_bandit = np.clip(reward_for_bandit, -1.0, 1.0)
 
-                    self._log(INFO, f"CB Reward: NormEff={normalized_efficiency:.3f}, RiskFactor={risk_factor:.2f}, IdlePenalty={idle_tdp_penalty:.3f}. FINAL REWARD={reward_for_bandit:.3f}")
+                    self._log(INFO, f"CB Reward: NormEff={normalized_efficiency:.3f}, RiskFactor={risk_factor:.2f}, IdleModifier={idle_modifier:.3f}. FINAL REWARD={reward_for_bandit:.3f}")
 
                     # Consume the flag after the if/else block, ensuring it's always reset
                     if self.pid_triggered_since_last_decision:
