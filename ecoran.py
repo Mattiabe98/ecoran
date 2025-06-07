@@ -1009,7 +1009,7 @@ class PowerManager(xAppBase):
                             reward_for_bandit = -1.0
                             self._log(WARN, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was wrong. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'RED')}")
                         else:
-                            reward_for_bandit = 0.1
+                            reward_for_bandit = 0.25
                             self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying incentive bonus. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
 
                     # --- HIERARCHY 2: If no PID, evaluate based on the system state ---
@@ -1020,7 +1020,7 @@ class PowerManager(xAppBase):
                         else:
                             danger_zone_start = self.target_ru_cpu_usage * 0.99
                             penalty_progress = (cpu_usage - danger_zone_start) / (self.target_ru_cpu_usage - danger_zone_start)
-                            reward_for_bandit = -np.clip(penalty_progress, 0, 1)
+                            reward_for_bandit = -0.5 * np.clip(penalty_progress, 0, 1)
                         reward_color = 'GREEN' if reward_for_bandit >=0 else 'RED'
                         self._log(INFO, f"CB Reward (Stressed): CPU at {cpu_usage:.2f}%. Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
 
