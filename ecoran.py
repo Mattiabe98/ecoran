@@ -1029,11 +1029,25 @@ class PowerManager(xAppBase):
                             # Use an exponential penalty to make it hurt much more as it gets closer to the target
                             cpu_stress_penalty = np.clip(penalty_progress, 0, 1) ** 2
                     
-                        # 3. Check for PID intervention as a major penalty
+                        # 3. Conditional PID Penalty <<<
                         pid_penalty = 0.0
                         if self.pid_triggered_since_last_decision:
-                            pid_penalty = 1.0 # A massive penalty
-                            self._log(WARN, "CB REWARD: PID safety net was triggered. Applying max penalty.")
+                            action_delta_w = 0.0
+                            # Check what the last action was
+                            if self.last_selected_arm_index is not None and self.arm_keys_ordered:
+                                chosen_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
+                                action_delta_w = self.bandit_actions.get(chosen_arm_key, 0.0)
+                        
+                            # Apply penalty ONLY if the action was not to increase TDP
+                            if action_delta_w <= 0: # This covers 'dec_*' and 'hold'
+                                pid_penalty = 1.0 # Apply the full penalty
+                                self._log(WARN, f"CB REWARD: PID triggered after a '{chosen_arm_key}' action. Applying max penalty.")
+                            else: # The action was an increase
+                                # The bandit tried to do the right thing! Do NOT penalize it.
+                                # You could even give a small bonus here, but let's start by just not penalizing.
+                                pid_penalty = 0.0 
+                                self._log(INFO, f"CB REWARD: PID triggered, but last action was '{chosen_arm_key}'. No PID penalty applied.")
+
                         
                         # 4. Combine into final reward
                         reward_for_bandit = normalized_efficiency - cpu_stress_penalty - pid_penalty
