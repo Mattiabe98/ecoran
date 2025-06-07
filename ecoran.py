@@ -514,10 +514,11 @@ class PowerManager(xAppBase):
       
     def _run_ru_timing_pid_step(self, current_ru_cpu_usage: float):
         if not self.ru_timing_core_indices: return 
-        self.pid_triggered_since_last_decision = True
+        
         pid_critical_ru_cpu_trigger = self.target_ru_cpu_usage # Using the direct target now
     
         if current_ru_cpu_usage > pid_critical_ru_cpu_trigger:
+            self.pid_triggered_since_last_decision = True
             tdp_change_w = self.tdp_adj_step_w_large 
             new_target_tdp = self.current_tdp_w + tdp_change_w
             
