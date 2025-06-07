@@ -979,42 +979,88 @@ class PowerManager(xAppBase):
                     pid_penalty = 0.0
                     increase_action_bonus = 0.0
 
+                    # --- REWARD CALCULATION ---
+
+                    # 1. Determine the last action taken
                     action_delta_w = 0.0
                     chosen_arm_key = "N/A"
                     if self.last_selected_arm_index is not None and self.arm_keys_ordered:
                         chosen_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
                         action_delta_w = self.bandit_actions.get(chosen_arm_key, 0.0)
-                    
-                    # Apply Conditional PID Penalty
-                    if self.pid_triggered_since_last_decision:
-                        if action_delta_w <= 0:
-                            pid_penalty = 1.0 # A large penalty
-                            self._log(WARN, f"CB REWARD: PID triggered after '{chosen_arm_key}'. Applying PID Penalty.")
-                        else:
-                            self._log(INFO, f"CB REWARD: PID triggered after '{chosen_arm_key}', but no penalty applied.")
-                        self.pid_triggered_since_last_decision = False
-                    
-                    # Apply Conditional CPU Stress Penalty & Bonus
-                    cpu_usage_for_penalty = current_ru_cpu_usage_control_val
+
+                    # 2. Check for the true IDLE state (no UEs and low CPU)
+                    # This is the only state where the goal is NOT efficiency.
+                    cpu_usage = current_ru_cpu_usage_control_val
                     danger_zone_start = self.target_ru_cpu_usage * 0.98
-                    
-                    if cpu_usage_for_penalty > danger_zone_start:
-                        if action_delta_w <= 0:
-                            penalty_progress = (cpu_usage_for_penalty - danger_zone_start) / (self.target_ru_cpu_usage - danger_zone_start)
-                            cpu_stress_penalty = np.clip(penalty_progress, 0, 1) ** 2
-                            self._log(WARN, f"CB REWARD: CPU in danger zone ({cpu_usage_for_penalty:.2f}%) after '{chosen_arm_key}'. Applying Stress Penalty.")
-                        else: # action was an increase
-                            increase_action_bonus = 0.1 # Nudge to escape zero-efficiency situations
-                            self._log(INFO, f"CB REWARD: CPU in danger zone ({cpu_usage_for_penalty:.2f}%) but last action was '{chosen_arm_key}'. Applying Increase Bonus.")
 
-                    # 3. Calculate Final Reward
-                    # The reward is ALWAYS based on efficiency, modified by penalties/bonuses.
-                    reward_for_bandit = normalized_efficiency + increase_action_bonus - cpu_stress_penalty - pid_penalty
+                    is_truly_idle = (current_num_active_ues == 0 and cpu_usage < danger_zone_start)
                     
-                    # Final clipping to keep the reward bounded
-                    reward_for_bandit = np.clip(reward_for_bandit, -1.0, 1.0)
+                    if is_truly_idle:
+                        # --- IDLE STATE REWARD: Goal is to reach min TDP ---
+                        idle_reward_config = self.config.get('contextual_bandit', {}).get('idle_reward_logic', {})
+                        
+                        normalized_tdp_excursion = 0.0
+                        if (self.tdp_max_w - self.tdp_min_w) > 0.01:
+                            normalized_tdp_excursion = (tdp_for_reward_eval - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w)
+                        
+                        min_tdp_bonus = float(idle_reward_config.get('min_tdp_bonus', 1.0))
+                        decrease_progress_bonus = float(idle_reward_config.get('decrease_progress_bonus', 0.3))
+                        hold_penalty_factor = float(idle_reward_config.get('hold_penalty_factor', 0.7))
+                        increase_penalty = float(idle_reward_config.get('increase_penalty', -1.0))
+                    
+                        if abs(tdp_for_reward_eval - self.tdp_min_w) < 1.0:
+                            reward_for_bandit = min_tdp_bonus if action_delta_w <= 0 else increase_penalty
+                        elif action_delta_w < 0:
+                            reward_for_bandit = (1.0 - normalized_tdp_excursion) + decrease_progress_bonus
+                        elif action_delta_w == 0:
+                            reward_for_bandit = -1.0 * normalized_tdp_excursion * hold_penalty_factor
+                        else: # increase action
+                            reward_for_bandit = increase_penalty
+                        
+                        self._log(INFO, f"CB Reward (Idle): Final Reward={reward_for_bandit:.3f}")
 
-                    self._log(INFO, f"CB Reward: NormEff={normalized_efficiency:.3f}, IncBonus={increase_action_bonus:.3f}, StressPenalty={cpu_stress_penalty:.3f}, PIDPenalty={pid_penalty:.3f}. FINAL REWARD={reward_for_bandit:.3f}")
+                    else: # Active or Stressed State: Goal is ALWAYS efficiency, modified by penalties
+                        # --- ACTIVE / STRESSED STATE REWARD LOGIC ---
+                        
+                        # 1. Calculate the Primary Metric: Normalized Efficiency
+                        current_raw_efficiency = 0.0
+                        if num_kpm_reports_processed > 0 and interval_energy_uj is not None and interval_energy_uj > 1e-3:
+                            current_raw_efficiency = total_bits_optimizer_interval / interval_energy_uj
+                        
+                        norm_eff_params = self.config.get('contextual_bandit', {}).get('normalization_parameters', {}).get('efficiency_reward', {'min': 0.0, 'max': 5.0})
+                        clamped_eff = np.clip(current_raw_efficiency, norm_eff_params['min'], norm_eff_params['max'])
+                        normalized_efficiency = self._normalize_feature(clamped_eff, 'efficiency_reward')
+
+                        # 2. Determine penalties based on state and last action
+                        cpu_stress_penalty = 0.0
+                        pid_penalty = 0.0
+                        
+                        # Apply Conditional PID Penalty
+                        if self.pid_triggered_since_last_decision:
+                            if action_delta_w <= 0:
+                                pid_penalty = 1.0 # Large penalty for making things worse
+                                self._log(WARN, f"CB REWARD: PID triggered after '{chosen_arm_key}'. Applying PID Penalty.")
+                            else: # Shield 'increase' actions from this penalty
+                                self._log(INFO, f"CB REWARD: PID triggered after '{chosen_arm_key}', but no penalty applied.")
+                        
+                        # Apply Conditional (and less aggressive) CPU Stress Penalty
+                        if cpu_usage > danger_zone_start:
+                            if action_delta_w <= 0:
+                                # LINEAR penalty - no more squaring!
+                                penalty_progress = (cpu_usage - danger_zone_start) / (self.target_ru_cpu_usage - danger_zone_start)
+                                cpu_stress_penalty = np.clip(penalty_progress, 0, 1)
+                                self._log(WARN, f"CB REWARD: CPU in danger zone ({cpu_usage:.2f}%) after '{chosen_arm_key}'. Applying Stress Penalty.")
+                        
+                        # 3. Calculate Final Reward
+                        # The reward is ALWAYS based on efficiency, modified by penalties.
+                        reward_for_bandit = normalized_efficiency - cpu_stress_penalty - pid_penalty
+                        reward_for_bandit = np.clip(reward_for_bandit, -1.0, 1.0)
+
+                        self._log(INFO, f"CB Reward (Active/Stressed): NormEff={normalized_efficiency:.3f}, StressPenalty={cpu_stress_penalty:.3f}, PIDPenalty={pid_penalty:.3f}. FINAL REWARD={reward_for_bandit:.3f}")
+
+                    # Consume the flag after the if/else block, ensuring it's always reset
+                    if self.pid_triggered_since_last_decision:
+                        self.pid_triggered_since_last_decision = False
                     
                     self.most_recent_calculated_reward_for_log = reward_for_bandit
                     
