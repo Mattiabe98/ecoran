@@ -991,7 +991,7 @@ class PowerManager(xAppBase):
                     # 2. Check for the true IDLE state (no UEs and low CPU)
                     # This is the only state where the goal is NOT efficiency.
                     cpu_usage = current_ru_cpu_usage_control_val
-                    danger_zone_start = self.target_ru_cpu_usage * 0.98
+                    danger_zone_start = self.target_ru_cpu_usage * 0.99
 
                     is_truly_idle = (current_num_active_ues == 0 and cpu_usage < danger_zone_start)
                     
