@@ -187,7 +187,7 @@ class PowerManager(xAppBase):
         self.most_recent_calculated_reward_for_log: Optional[float] = None # For logging
         self.current_num_active_ues_for_log: int = 0
         self.pid_triggered_since_last_decision = False
-        
+        self.max_efficiency_seen = 1e-9
         self._validate_config()
         if self.dry_run: self._log(INFO, "!!!!!!!!!!!! DRY RUN MODE ENABLED !!!!!!!!!!!!")
 
@@ -963,7 +963,6 @@ class PowerManager(xAppBase):
                     tdp_for_reward_eval = self.optimizer_target_tdp_w
 
                     reward_for_bandit = 0.0
-                    # 1. Determine system state and last action
                     # --- HIERARCHICAL REWARD CALCULATION ---
 
                     # 1. Determine system state and last action
@@ -977,75 +976,64 @@ class PowerManager(xAppBase):
 
                     # --- HIERARCHY 1: The PID trigger is the ultimate failure signal ---
                     if self.pid_triggered_since_last_decision:
-                        self.pid_triggered_since_last_decision = False # Consume flag
+                        self.pid_triggered_since_last_decision = False
                         if action_delta_w <= 0:
                             reward_for_bandit = -1.0
                             self._log(WARN, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was wrong. Final Reward={reward_for_bandit:.3f}")
-                        else: # action_delta_w > 0
-                            # Reward is based on resulting efficiency + bonus to ensure it's positive
-                            current_raw_efficiency = 0.0
-                            if num_kpm_reports_processed > 0 and interval_energy_uj is not None and interval_energy_uj > 1e-3:
-                                current_raw_efficiency = total_bits_optimizer_interval / interval_energy_uj
-                            norm_eff_params = self.config.get('contextual_bandit', {}).get('normalization_parameters', {}).get('efficiency_reward', {'min': 0.0, 'max': 5.0})
-                            def _normalize(val, min_val, max_val):
-                                if (max_val - min_val) < 1e-6: return 0.5
-                                return np.clip((val - min_val) / (max_val - min_val), 0.0, 1.0)
-                            normalized_efficiency = _normalize(current_raw_efficiency, norm_eff_params.get('min', 0.0), norm_eff_params.get('max', 5.0))
-                            reward_for_bandit = normalized_efficiency + 0.1
-                            self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' correct. Reward=Eff+Bonus. Final Reward={reward_for_bandit:.3f}")
+                        else:
+                            reward_for_bandit = 0.1
+                            self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying incentive bonus. Final Reward={reward_for_bandit:.3f}")
 
-                    # --- HIERARCHY 2: If no PID, is the CPU STRESSED? ---
+                    # --- HIERARCHY 2: If no PID, evaluate based on the system state ---
                     elif cpu_usage > (self.target_ru_cpu_usage * 0.99):
-                        # --- STRESSED STATE (REGARDLESS OF UEs) ---
-                        # Goal: Alleviate stress.
-                        if action_delta_w > 0: # Increase is the only correct action
-                            reward_for_bandit = 0.1 # Small, guaranteed positive reward to encourage escape
-                        else: # Decrease or Hold are wrong
+                        # --- STRESSED STATE ---
+                        if action_delta_w > 0:
+                            reward_for_bandit = 0.1
+                        else:
                             danger_zone_start = self.target_ru_cpu_usage * 0.99
                             penalty_progress = (cpu_usage - danger_zone_start) / (self.target_ru_cpu_usage - danger_zone_start)
-                            reward_for_bandit = -np.clip(penalty_progress, 0, 1) # Linear penalty
+                            reward_for_bandit = -np.clip(penalty_progress, 0, 1)
                         self._log(INFO, f"CB Reward (Stressed): CPU at {cpu_usage:.2f}%. Action '{chosen_arm_key}'. Final Reward={reward_for_bandit:.3f}")
 
-                    # --- HIERARCHY 3: If not stressed, THEN check for UEs ---
                     elif is_active_ue_present:
                         # --- ACTIVE & HEALTHY STATE ---
-                        # Goal: Maximize efficiency.
                         current_raw_efficiency = 0.0
                         if num_kpm_reports_processed > 0 and interval_energy_uj is not None and interval_energy_uj > 1e-3:
                             current_raw_efficiency = total_bits_optimizer_interval / interval_energy_uj
-                        norm_eff_params = self.config.get('contextual_bandit', {}).get('normalization_parameters', {}).get('efficiency_reward', {'min': 0.0, 'max': 5.0})
-                        def _normalize(val, min_val, max_val):
-                            if (max_val - min_val) < 1e-6: return 0.5
-                            return np.clip((val - min_val) / (max_val - min_val), 0.0, 1.0)
-                        reward_for_bandit = _normalize(current_raw_efficiency, norm_eff_params.get('min', 0.0), norm_eff_params.get('max', 5.0))
-                        self._log(INFO, f"CB Reward (Active/Healthy): Final Reward={reward_for_bandit:.3f}")
+                        
+                        # Adaptive Normalization
+                        self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
+                        normalized_efficiency = current_raw_efficiency / self.max_efficiency_seen if self.max_efficiency_seen > 0 else 0.0
+                        
+                        # Stability Bonus for 'hold'
+                        stability_bonus = 0.0
+                        if action_delta_w == 0:
+                            # Reward holding, especially if efficiency is already high
+                            stability_bonus = 0.1 * normalized_efficiency
+                        
+                        reward_for_bandit = normalized_efficiency + stability_bonus
+                        self._log(INFO, f"CB Reward (Active/Healthy): NormEff={normalized_efficiency:.3f} (MaxSeen={self.max_efficiency_seen:.3f}), StabilityBonus={stability_bonus:.3f}. Final Reward={reward_for_bandit:.3f}")
                     
                     else: # Not stressed and no active UEs
                         # --- TRUE IDLE STATE ---
-                        # Goal: Decrease TDP towards the minimum.
                         idle_reward_config = self.config.get('contextual_bandit', {}).get('idle_reward_logic', {})
-                        normalized_tdp_excursion = 0.0
-                        if (self.tdp_max_w - self.tdp_min_w) > 0.01:
-                            normalized_tdp_excursion = (tdp_for_reward_eval - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w)
+                        normalized_tdp_excursion = (tdp_for_reward_eval - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w) if (self.tdp_max_w - self.tdp_min_w) > 0 else 0
                         
-                        min_tdp_bonus = float(idle_reward_config.get('min_tdp_bonus', 1.0))
-                        decrease_progress_bonus = float(idle_reward_config.get('decrease_progress_bonus', 0.3))
-                        hold_penalty_factor = float(idle_reward_config.get('hold_penalty_factor', 0.7))
-                        increase_penalty = float(idle_reward_config.get('increase_penalty', -1.0))
-                    
-                        if abs(tdp_for_reward_eval - self.tdp_min_w) < 1.0:
-                            reward_for_bandit = min_tdp_bonus if action_delta_w <= 0 else increase_penalty
+                        # Give a small bonus for holding at the minimum TDP
+                        if abs(tdp_for_reward_eval - self.tdp_min_w) < 1.0 and action_delta_w == 0:
+                            reward_for_bandit = float(idle_reward_config.get('min_tdp_bonus', 1.0))
                         elif action_delta_w < 0:
-                            reward_for_bandit = (1.0 - normalized_tdp_excursion) + decrease_progress_bonus
-                        elif action_delta_w == 0:
-                            reward_for_bandit = -1.0 * normalized_tdp_excursion * hold_penalty_factor
+                            reward_for_bandit = (1.0 - normalized_tdp_excursion) + float(idle_reward_config.get('decrease_progress_bonus', 0.3))
+                        elif action_delta_w == 0: # Holding above min TDP
+                            reward_for_bandit = -1.0 * normalized_tdp_excursion * float(idle_reward_config.get('hold_penalty_factor', 0.7))
                         else: # increase action
-                            reward_for_bandit = increase_penalty
+                            reward_for_bandit = float(idle_reward_config.get('increase_penalty', -1.0))
                         
                         self._log(INFO, f"CB Reward (True Idle): Final Reward={reward_for_bandit:.3f}")
 
                     # Final clipping as a safety net
                     reward_for_bandit = np.clip(reward_for_bandit, -1.0, 1.0)
+
 
                     # Consume the flag after the if/else block, ensuring it's always reset
                     if self.pid_triggered_since_last_decision:
