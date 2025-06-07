@@ -1037,7 +1037,7 @@ class PowerManager(xAppBase):
                         
                         # Add your requested raw efficiency and colorized MaxSeen to the log
                         colored_max_seen = self._colorize(f'{self.max_efficiency_seen:.3f}', 'WHITE')
-                        self._log(INFO, f"CB Reward (Active/Healthy): RawEff={current_raw_efficiency:.3f} b/uJ, NormEff={normalized_efficiency:.3f} (MaxSeen={colored_max_seen}). Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
+                        self._log(INFO, f"CB Reward (Active/Healthy): RawEff={self._colorize(f'{current_raw_efficiency:.3f}', 'YELLOW')} b/uJ, NormEff={normalized_efficiency:.3f} (MaxSeen={colored_max_seen}). Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
                     
                     else: # Not stressed and no active UEs
                         # --- TRUE IDLE STATE ---
