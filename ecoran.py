@@ -188,8 +188,28 @@ class PowerManager(xAppBase):
         self.current_num_active_ues_for_log: int = 0
         self.pid_triggered_since_last_decision = False
         self.max_efficiency_seen = 1e-9
+
+        self.COLORS = {
+            'RED': '\033[91m',
+            'GREEN': '\033[92m',
+            'YELLOW': '\033[93m',
+            'BLUE': '\033[94m',
+            'MAGENTA': '\033[95m',
+            'CYAN': '\033[96m',
+            'WHITE': '\033[97m',
+            'BOLD': '\033[1m',
+            'RESET': '\033[0m'
+        }
+        
         self._validate_config()
         if self.dry_run: self._log(INFO, "!!!!!!!!!!!! DRY RUN MODE ENABLED !!!!!!!!!!!!")
+
+    def _colorize(self, text: str, color: str) -> str:
+        """Wraps text in ANSI color codes for terminal output."""
+        color_code = self.COLORS.get(color.upper())
+        if color_code:
+            return f"{color_code}{text}{self.COLORS['RESET']}"
+        return text
 
     def _ensure_default_norm_params(self):
         """Ensure essential normalization parameters have defaults if not in config."""
@@ -500,10 +520,12 @@ class PowerManager(xAppBase):
             self._log(WARN, f"Could not read {self.power_limit_uw_file} before write: {e}. Proceeding with write.")
 
         try:
-            self._log(INFO, f"{context}. Setting TDP to: {new_tdp_w:.1f}W (from {self.current_tdp_w:.1f}W).")
+            # Colorize the new TDP value in magenta
+            colored_tdp = self._colorize(f'{new_tdp_w:.1f}W', 'MAGENTA')
+            self._log(INFO, f"{context}. Setting TDP to: {colored_tdp} (from {self.current_tdp_w:.1f}W).")
             with open(self.power_limit_uw_file, 'w') as f_write:
                 f_write.write(str(clamped_tdp_uw))
-            self.current_tdp_w = new_tdp_w 
+            self.current_tdp_w = new_tdp_w
         except OSError as e:
             self._log(ERROR, f"OSError writing TDP to {self.power_limit_uw_file}: {e}")
             raise RuntimeError(f"OSError setting TDP: {e}") 
@@ -545,7 +567,12 @@ class PowerManager(xAppBase):
                     self.contextual_bandit_model.partial_fit(X_update, action_update, reward_update) # Use partial_fit for online updates
                     
                     last_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
-                    self._log(INFO, f"CB Lib: Updated ArmIdx '{self.last_selected_arm_index}' (Key: {last_arm_key}) with reward {current_reward_for_bandit:.3f}.")
+                    reward_color = 'GREEN' if current_reward_for_bandit >= 0 else 'RED'
+                    
+                    colored_key = self._colorize(f'Key: {last_arm_key}', 'CYAN')
+                    colored_reward = self._colorize(f'{current_reward_for_bandit:.3f}', reward_color)
+                    
+                    self._log(INFO, f"CB Lib: Updated ArmIdx '{self.last_selected_arm_index}' ({colored_key}) with reward {colored_reward}.")
                 except Exception as e:
                     self._log.error(f"CB Lib: Error during model partial_fit/update: {e}") # Typo: self._log.error -> self._log(ERROR, ...)
             else:
@@ -634,7 +661,8 @@ class PowerManager(xAppBase):
                 if self.arm_keys_ordered: selected_arm_key_log = self.arm_keys_ordered[selected_arm_index]
                 scores_for_logging_str = "[Error: Exception in arm selection]"
         
-        self._log(INFO, f"CB Lib: Selected ArmIdx '{selected_arm_index}' (Key: {selected_arm_key_log}). Scores (expected): [{scores_for_logging_str}]")
+        colored_selection = self._colorize(selected_arm_key_log, 'BLUE')
+        self._log(INFO, f"CB Lib: Selected ArmIdx '{selected_arm_index}' (Key: {colored_selection}). Scores (expected): [{scores_for_logging_str}]")
         
         self.last_selected_arm_index = selected_arm_index
         self.last_context_vector = current_context_vector # Store the non-reshaped one
@@ -979,12 +1007,12 @@ class PowerManager(xAppBase):
                         self.pid_triggered_since_last_decision = False
                         if action_delta_w <= 0:
                             reward_for_bandit = -1.0
-                            self._log(WARN, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was wrong. Final Reward={reward_for_bandit:.3f}")
-                        else: # action_delta_w > 0
-                            reward_for_bandit = 0.1 # Keep this simple bonus for the emergency override case
-                            self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying incentive bonus. Final Reward={reward_for_bandit:.3f}")
+                            self._log(WARN, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was wrong. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'RED')}")
+                        else:
+                            reward_for_bandit = 0.1
+                            self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying incentive bonus. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
 
-                    # --- HIERARCHY 2: If no PID, is the CPU STRESSED? ---
+                    # --- HIERARCHY 2: If no PID, evaluate based on the system state ---
                     elif cpu_usage > (self.target_ru_cpu_usage * 0.99):
                         # --- STRESSED STATE ---
                         if action_delta_w > 0:
@@ -993,9 +1021,9 @@ class PowerManager(xAppBase):
                             danger_zone_start = self.target_ru_cpu_usage * 0.99
                             penalty_progress = (cpu_usage - danger_zone_start) / (self.target_ru_cpu_usage - danger_zone_start)
                             reward_for_bandit = -np.clip(penalty_progress, 0, 1)
-                        self._log(INFO, f"CB Reward (Stressed): CPU at {cpu_usage:.2f}%. Action '{chosen_arm_key}'. Final Reward={reward_for_bandit:.3f}")
+                        reward_color = 'GREEN' if reward_for_bandit >=0 else 'RED'
+                        self._log(INFO, f"CB Reward (Stressed): CPU at {cpu_usage:.2f}%. Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
 
-                    # --- HIERARCHY 3: If not stressed, THEN check for UEs ---
                     elif is_active_ue_present:
                         # --- ACTIVE & HEALTHY STATE ---
                         current_raw_efficiency = 0.0
@@ -1006,38 +1034,37 @@ class PowerManager(xAppBase):
                         normalized_efficiency = current_raw_efficiency / self.max_efficiency_seen if self.max_efficiency_seen > 0 else 0.0
                         
                         reward_for_bandit = normalized_efficiency
-                        self._log(INFO, f"CB Reward (Active/Healthy): NormEff={normalized_efficiency:.3f} (MaxSeen={self.max_efficiency_seen:.3f}). Final Reward={reward_for_bandit:.3f}")
+                        
+                        # Add your requested raw efficiency and colorized MaxSeen to the log
+                        colored_max_seen = self._colorize(f'{self.max_efficiency_seen:.3f}', 'WHITE')
+                        self._log(INFO, f"CB Reward (Active/Healthy): RawEff={current_raw_efficiency:.3f} b/uJ, NormEff={normalized_efficiency:.3f} (MaxSeen={colored_max_seen}). Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
                     
                     else: # Not stressed and no active UEs
-                        # --- TRUE IDLE STATE (with Holding Zone) ---
-                        holding_zone_width_w = 5.0 # TUNABLE: How close to min is "good enough"
-
-                        # Are we inside the holding zone?
-                        if tdp_for_reward_eval <= (self.tdp_min_w + holding_zone_width_w):
-                            # GOAL: Stay here. 'hold' is the best action.
+                        # --- TRUE IDLE STATE ---
+                        if abs(tdp_for_reward_eval - self.tdp_min_w) < 5.0: # Use your 5W holding zone
+                            # At/Near the floor, holding is the best action.
                             if action_delta_w == 0:
-                                reward_for_bandit = 1.0 # Max reward for stability
+                                reward_for_bandit = 1.0
                             elif action_delta_w < 0:
-                                reward_for_bandit = 0.2 # Decreasing further is okay, but risky and less rewarded
-                            else: # action_delta_w > 0
-                                reward_for_bandit = -1.0 # Increasing is wrong
-                            self._log(INFO, f"CB Reward (Idle - In Holding Zone): Action '{chosen_arm_key}'. Final Reward={reward_for_bandit:.3f}")
-                        
-                        else: # We are outside the holding zone
-                            # GOAL: Get to the holding zone. 'decrease' is the best action.
+                                reward_for_bandit = 0.2 # Still okay to decrease, but less rewarded
+                            else: # increase
+                                reward_for_bandit = -1.0
+                        else:
+                            # Not at the floor, decreasing is best.
                             if action_delta_w < 0:
-                                # Proportional reward for making progress
                                 normalized_tdp_excursion = (tdp_for_reward_eval - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w) if (self.tdp_max_w - self.tdp_min_w) > 0 else 0
-                                reward_for_bandit = 0.5 * (1.0 - normalized_tdp_excursion) + 0.3 # Base progress + bonus
+                                reward_for_bandit = 0.5 * (1.0 - normalized_tdp_excursion) + 0.3
                             elif action_delta_w == 0:
-                                reward_for_bandit = 0.0 # Holding is neutral, not penalized but not rewarded
+                                reward_for_bandit = 0.0 # Neutral, no incentive to wait when far from goal
                             else: # action_delta_w > 0
-                                reward_for_bandit = -1.0 # Increasing is wrong
-                            self._log(INFO, f"CB Reward (Idle - Outside Holding Zone): Action '{chosen_arm_key}'. Final Reward={reward_for_bandit:.3f}")
+                                reward_for_bandit = -1.0 # Worst action
+                        
+                        reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
+                        self._log(INFO, f"CB Reward (True Idle): Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
 
                     # Final clipping as a safety net
                     reward_for_bandit = np.clip(reward_for_bandit, -1.0, 1.0)
-
+                    
                     # Consume the flag after the if/else block, ensuring it's always reset
                     if self.pid_triggered_since_last_decision:
                         self.pid_triggered_since_last_decision = False
