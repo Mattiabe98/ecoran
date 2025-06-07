@@ -1033,7 +1033,7 @@ class PowerManager(xAppBase):
                         self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
                         normalized_efficiency = current_raw_efficiency / self.max_efficiency_seen if self.max_efficiency_seen > 0 else 0.0
                         
-                        reward_for_bandit = normalized_efficiency ** 2
+                        reward_for_bandit = normalized_efficiency ** 3
                         
                         # Add your requested raw efficiency and colorized MaxSeen to the log
                         colored_max_seen = self._colorize(f'{self.max_efficiency_seen:.3f}', 'WHITE')
