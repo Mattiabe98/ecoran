@@ -55,11 +55,17 @@ kpm_subscriptions:
   style4_granularity_period_ms: 1000 # Changed from 5000 to 1000
 
 contextual_bandit:
+  actions_tdp_delta_w:
+    "dec_10": -10.0
+    "dec_5": -5.0
+    "hold": 0.0
+    "inc_5": 5.0
+    "inc_10": 10.0
   # ... other bandit params
   context_dimension_features_only: 8 
   lambda_: 1.0            # Regularization (default 1.0 for LinTS)
   fit_intercept: True
-  v_sq: 0.5             # Variance scaling for Thompson Sampling. Smaller = less exploration. Try values like 0.01, 0.05, 0.1, 0.25. Default in lib is 1.0.
+  v_sq: 0.1             # Variance scaling for Thompson Sampling. Smaller = less exploration. Try values like 0.01, 0.05, 0.1, 0.25. Default in lib is 1.0.
   sample_from: "coef"    # "coef" or "ci"
   method: "chol"         # "chol" or "sm"
   beta_prior: "auto"     # "auto", null (None in Python), or specific tuple e.g. [[0.5, 2], 2]
@@ -124,10 +130,10 @@ tdp_range:
 
 # === RU Timing PID Controller Parameters ===
 # Target CPU utilization percentage for the *average of max* of 'ru_timing_cores'.
-target_ru_timing_cpu_usage: 99.5
+target_ru_timing_cpu_usage: 99.8
 
 # Interval (in seconds) at which the RU Timing PID logic runs.
-ru_timing_pid_interval_s: 1.0 # e.g., adjust TDP for RU timing every 1 second
+ru_timing_pid_interval_s: 2.5 # e.g., adjust TDP for RU timing every 1 second
 
 # Sensitivity Factor for RU Timing PID.
 tdp_adjustment_sensitivity: 0.0005
@@ -152,28 +158,7 @@ optimizer_decision_interval_s: 3.0
 
 active_ue_throughput_threshold_mbps: 5
 # Bandit Optimizer Configuration
-bandit_optimizer:
-  # Actions: TDP delta in Watts. Keys are arm names, values are TDP changes.
-  # Include 'hold' if you want an option to explicitly not change TDP.
-  actions_tdp_delta_w:
-    "decrease_large": -10.0
-    "decrease_medium": -5.0
-    "decrease_small": -2.0
-    "hold": 0.0
-    "increase_small": 2.0
-    "increase_medium": 5.0
-    "increase_large": 10.0
-  
-  # Prior mean for efficiency (bits/uJ). A rough initial guess.
-  prior_mean_efficiency: 2.0
-  
-  # Prior precision for efficiency. Lower value = more initial exploration.
-  # (Precision = 1 / Variance). Small precision means large variance.
-  prior_precision: 0.01
-  
-  # Reward precision: Assumed precision of the efficiency measurement itself.
-  # Higher if measurements are stable, lower if noisy.
-  reward_precision: 1.0
+
 
 # ------------------------------------------------------------------------------
 # Intel Speed Select Technology - Core Power (SST-CP) Configuration
