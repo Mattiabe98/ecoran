@@ -965,32 +965,39 @@ class PowerManager(xAppBase):
                     reward_for_bandit = 0.0
                     is_effectively_idle = current_num_active_ues == 0 and total_bits_optimizer_interval < (self.active_ue_throughput_threshold_mbps * 1e6 * self.optimizer_decision_interval_s / 10.0)
                     
+                    # Determine the last action for use in all reward logic
                     action_delta_w = 0.0
                     chosen_arm_key = "N/A"
                     if self.last_selected_arm_index is not None and self.arm_keys_ordered:
                         chosen_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
                         action_delta_w = self.bandit_actions.get(chosen_arm_key, 0.0)
-
-                    if is_effectively_idle:
-                        # --- IDLE STATE REWARD LOGIC ---
+                    
+                    # --- HIERARCHY 1: The PID trigger is the most important event ---
+                    if self.pid_triggered_since_last_decision:
+                        # The system is under stress, regardless of any other flag.
+                        if action_delta_w <= 0:
+                            # Catastrophic failure: an action made things worse or did nothing.
+                            reward_for_bandit = -1.0
+                            self._log(WARN, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was wrong. Final Reward={reward_for_bandit:.3f}")
+                        else: # action_delta_w > 0
+                            # The agent tried to do the right thing. Give it a guaranteed positive incentive.
+                            reward_for_bandit = 0.1
+                            self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying incentive bonus. Final Reward={reward_for_bandit:.3f}")
                         
-                        # Check for the absolute failure condition FIRST
-                        if self.pid_triggered_since_last_decision and action_delta_w <= 0:
-                            reward_for_bandit = -1.0 # Absolute, maximal penalty
-                            self._log(WARN, f"CB REWARD (Idle): PID triggered after '{chosen_arm_key}'. Final Reward={reward_for_bandit:.3f}")
-                        else:
-                            # If no catastrophic failure, calculate reward normally.
-                            # The PID flag might be true here if the action was an increase, but we don't punish that.
-                            if self.pid_triggered_since_last_decision: # and action_delta_w > 0
-                                 self._log(INFO, f"CB REWARD (Idle): PID triggered after '{chosen_arm_key}', but action was an increase. No PID penalty applied.")
-
-                            # Calculate base idle reward
+                        # Consume the flag
+                        self.pid_triggered_since_last_decision = False
+                    
+                    # --- HIERARCHY 2: If PID did NOT trigger, evaluate the state normally ---
+                    else:
+                        if is_effectively_idle:
+                            # --- Standard Idle Logic (No PID Stress) ---
+                            # This logic is now safe to use because we know the PID didn't fire.
                             base_reward = 0.0
                             idle_reward_config = self.config.get('contextual_bandit', {}).get('idle_reward_logic', {})
+                            
                             normalized_tdp_excursion = 0.0
                             if (self.tdp_max_w - self.tdp_min_w) > 0.01:
                                 normalized_tdp_excursion = (tdp_for_reward_eval - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w)
-                            normalized_tdp_excursion = max(0.0, min(1.0, normalized_tdp_excursion))
                             
                             min_tdp_bonus = float(idle_reward_config.get('min_tdp_bonus', 1.0))
                             decrease_progress_bonus = float(idle_reward_config.get('decrease_progress_bonus', 0.3))
@@ -1003,28 +1010,15 @@ class PowerManager(xAppBase):
                                 base_reward = (1.0 - normalized_tdp_excursion) + decrease_progress_bonus
                             elif action_delta_w == 0:
                                 base_reward = -1.0 * normalized_tdp_excursion * hold_penalty_factor
-                            else:
+                            else: # increase action
                                 base_reward = increase_penalty
                             
                             reward_for_bandit = base_reward
-                            self._log(INFO, f"CB REWARD (Idle): No catastrophic failure. Final Reward={reward_for_bandit:.3f}")
-                        
-                        # Reset flag after it has been evaluated for this cycle
-                        self.pid_triggered_since_last_decision = False
+                            self._log(INFO, f"CB Reward (Idle, No PID): Final Reward={reward_for_bandit:.3f}")
 
-                    else: # Active traffic
-                        # --- ACTIVE STATE REWARD LOGIC ---
-
-                        # Check for the absolute failure condition FIRST
-                        if self.pid_triggered_since_last_decision and action_delta_w <= 0:
-                            reward_for_bandit = -1.0 # Absolute, maximal penalty
-                            self._log(WARN, f"CB REWARD (Active): PID triggered after '{chosen_arm_key}'. Final Reward={reward_for_bandit:.3f}")
-                        else:
-                            # If no catastrophic failure, proceed with nuanced reward calculation
-                            if self.pid_triggered_since_last_decision: # and action_delta_w > 0
-                                 self._log(INFO, f"CB REWARD (Active): PID triggered after '{chosen_arm_key}', but action was an increase. No PID penalty applied.")
-
-                            # 1. Calculate efficiency
+                        else: # Active traffic, No PID Stress
+                            # --- Standard Active Logic (No PID Stress) ---
+                            # Calculate efficiency
                             current_raw_efficiency = 0.0
                             if num_kpm_reports_processed > 0 and interval_energy_uj is not None and interval_energy_uj > 1e-3:
                                 current_raw_efficiency = total_bits_optimizer_interval / interval_energy_uj
@@ -1033,31 +1027,26 @@ class PowerManager(xAppBase):
                             clamped_eff = np.clip(current_raw_efficiency, norm_eff_params['min'], norm_eff_params['max'])
                             normalized_efficiency = self._normalize_feature(clamped_eff, 'efficiency_reward')
 
-                            # 2. Check for CPU Stress and apply incentives/penalties
+                            # Calculate conditional CPU stress penalty/bonus
                             cpu_stress_penalty = 0.0
                             increase_action_bonus = 0.0
                             cpu_usage_for_penalty = current_ru_cpu_usage_control_val
-                            cpu_target = self.target_ru_cpu_usage
-                            danger_zone_start = cpu_target * 0.98
+                            danger_zone_start = self.target_ru_cpu_usage * 0.98
 
                             if cpu_usage_for_penalty > danger_zone_start:
-                                if action_delta_w <= 0: # Penalize dec/hold in danger zone
-                                    penalty_progress = (cpu_usage_for_penalty - danger_zone_start) / (cpu_target - danger_zone_start)
+                                if action_delta_w <= 0:
+                                    penalty_progress = (cpu_usage_for_penalty - danger_zone_start) / (self.target_ru_cpu_usage - danger_zone_start)
                                     cpu_stress_penalty = np.clip(penalty_progress, 0, 1) ** 2
-                                    self._log(WARN, f"CB REWARD (Active): CPU in danger zone ({cpu_usage_for_penalty:.2f}%) after '{chosen_arm_key}'. Applying Stress Penalty.")
-                                else: # Incentivize increase in danger zone
-                                    increase_action_bonus = 0.1 # Small, guaranteed bonus for trying
-                                    self._log(INFO, f"CB REWARD (Active): CPU in danger zone ({cpu_usage_for_penalty:.2f}%) but last action was '{chosen_arm_key}'. Applying Increase Bonus.")
-                            
-                            # Also apply the bonus if the PID was triggered by an increase, to guarantee a positive reward
-                            if self.pid_triggered_since_last_decision and action_delta_w > 0:
-                                increase_action_bonus = 0.1
+                                    self._log(WARN, f"CB REWARD (Active, No PID): CPU in danger zone ({cpu_usage_for_penalty:.2f}%) after '{chosen_arm_key}'. Applying Stress Penalty.")
+                                else:
+                                    increase_action_bonus = 0.1
+                                    self._log(INFO, f"CB REWARD (Active, No PID): CPU in danger zone ({cpu_usage_for_penalty:.2f}%) but last action was '{chosen_arm_key}'. Applying Increase Bonus.")
 
-                            # 3. Calculate final reward
+                            # Calculate final reward
                             reward_for_bandit = normalized_efficiency - cpu_stress_penalty + increase_action_bonus
                             reward_for_bandit = np.clip(reward_for_bandit, -1.0, 1.0)
                             
-                            self._log(INFO, f"CB REWARD (Active): NormEff={normalized_efficiency:.3f}, StressPenalty={cpu_stress_penalty:.3f}, IncBonus={increase_action_bonus:.3f}. Final Reward={reward_for_bandit:.3f}")
+                            self._log(INFO, f"CB Reward (Active, No PID): NormEff={normalized_efficiency:.3f}, StressPenalty={cpu_stress_penalty:.3f}, IncBonus={increase_action_bonus:.3f}. Final Reward={reward_for_bandit:.3f}")
 
                         # Reset flag after it has been evaluated for this cycle
                         self.pid_triggered_since_last_decision = False
