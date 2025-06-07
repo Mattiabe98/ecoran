@@ -154,7 +154,7 @@ max_cpu_usage_samples: 3
 # Interval (seconds) at which the Bandit Optimizer makes a decision.
 # This should be long enough for KPM metrics to reflect TDP changes and stabilize.
 # If kpm_report_period_ms is 1000 (1s), consider 5-10s here.
-optimizer_decision_interval_s: 3.0
+optimizer_decision_interval_s: 5.0
 
 active_ue_throughput_threshold_mbps: 5
 # Bandit Optimizer Configuration
