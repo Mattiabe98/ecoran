@@ -276,49 +276,48 @@ class PowerManager(xAppBase):
         normalized = (value - val_min) / (val_max - val_min)
         return max(0.0, min(1.0, normalized)) # Clamp to [0,1]
     
+
+    def _get_current_context_vector(self,
+                                       current_num_active_ues: int,
+                                       current_ru_cpu_avg: float,
+                                       current_actual_tdp: float,
+                                       # The normalized efficiency is now passed in
+                                       normalized_efficiency: float 
+                                       ) -> np.array:
+        
+        def _normalize(val, min_val, max_val):
+            if (max_val - min_val) < 1e-6: return 0.5
+            return np.clip((val - min_val) / (max_val - min_val), 0.0, 1.0)
     
-
-def _get_current_context_vector(self,
-                                   current_num_active_ues: int,
-                                   current_ru_cpu_avg: float,
-                                   current_actual_tdp: float,
-                                   # The normalized efficiency is now passed in
-                                   normalized_efficiency: float 
-                                   ) -> np.array:
+        # --- MINIMALIST FEATURE ENGINEERING ---
     
-    def _normalize(val, min_val, max_val):
-        if (max_val - min_val) < 1e-6: return 0.5
-        return np.clip((val - min_val) / (max_val - min_val), 0.0, 1.0)
-
-    # --- MINIMALIST FEATURE ENGINEERING ---
-
-    # Feature 1: Normalized Efficiency (already calculated and passed in).
-    feature_1_norm_eff = normalized_efficiency
-
-    # Feature 2: CPU Headroom, normalized.
-    cpu_headroom = self.target_ru_cpu_usage - current_ru_cpu_avg
-    norm_params_cpu = self.norm_params.get('cpu_headroom', {'min': -5.0, 'max': 20.0})
-    feature_2_cpu_headroom = _normalize(cpu_headroom, norm_params_cpu.get('min'), norm_params_cpu.get('max'))
-
-    # Feature 3: TDP Position, normalized.
-    feature_3_tdp_pos = _normalize(current_actual_tdp, self.tdp_min_w, self.tdp_max_w)
-
-    # Feature 4: Number of Active UEs, normalized.
-    norm_params_ues = self.norm_params.get('num_active_ues', {'min': 0.0, 'max': 10.0})
-    feature_4_num_ues = _normalize(float(current_num_active_ues), norm_params_ues.get('min'), norm_params_ues.get('max'))
+        # Feature 1: Normalized Efficiency (already calculated and passed in).
+        feature_1_norm_eff = normalized_efficiency
     
-    final_features = np.array([
-        feature_1_norm_eff,
-        feature_2_cpu_headroom,
-        feature_3_tdp_pos,
-        feature_4_num_ues
-    ])
+        # Feature 2: CPU Headroom, normalized.
+        cpu_headroom = self.target_ru_cpu_usage - current_ru_cpu_avg
+        norm_params_cpu = self.norm_params.get('cpu_headroom', {'min': -5.0, 'max': 20.0})
+        feature_2_cpu_headroom = _normalize(cpu_headroom, norm_params_cpu.get('min'), norm_params_cpu.get('max'))
     
-    self._log(DEBUG_ALL, f"Context Vector (Normalized): [Eff:{final_features[0]:.2f}, "
-                         f"CPU_Headroom:{final_features[1]:.2f}, TDP_Pos:{final_features[2]:.2f}, "
-                         f"Num_UEs:{final_features[3]:.2f}]")
-
-    return final_features
+        # Feature 3: TDP Position, normalized.
+        feature_3_tdp_pos = _normalize(current_actual_tdp, self.tdp_min_w, self.tdp_max_w)
+    
+        # Feature 4: Number of Active UEs, normalized.
+        norm_params_ues = self.norm_params.get('num_active_ues', {'min': 0.0, 'max': 10.0})
+        feature_4_num_ues = _normalize(float(current_num_active_ues), norm_params_ues.get('min'), norm_params_ues.get('max'))
+        
+        final_features = np.array([
+            feature_1_norm_eff,
+            feature_2_cpu_headroom,
+            feature_3_tdp_pos,
+            feature_4_num_ues
+        ])
+        
+        self._log(DEBUG_ALL, f"Context Vector (Normalized): [Eff:{final_features[0]:.2f}, "
+                             f"CPU_Headroom:{final_features[1]:.2f}, TDP_Pos:{final_features[2]:.2f}, "
+                             f"Num_UEs:{final_features[3]:.2f}]")
+    
+        return final_features
     
     def _setup_logging(self):
         self.logger = logging.getLogger("EcoRANPowerManager")
