@@ -86,7 +86,11 @@ bootstrapped_ts:
   # idle_reward_scaling_factor: 1.0 # Used by 'closeness_with_bonus' if you keep that.
   # idle_decrease_action_bonus: 0.2 # Used by 'closeness_with_bonus'
   # increase_penalty_value: -1.0 # Used by 'closeness_with_bonus' for increase actions
-
+  normalization_parameters:
+    efficiency_reward: {'min': 0.0, 'max': 5.0} # We still need this for the reward, but not as a feature
+    cpu_headroom: {'min': -5.0, 'max': 20.0}
+    num_active_ues: {'min': 0.0, 'max': 5.0} # Set this to a reasonable max for your scenario
+    
   idle_reward_logic:
     mode: "closeness_with_bonus" # Options: "closeness_with_bonus", "strong_min_focus", "original_penalty"
     # Params for "strong_min_focus"
