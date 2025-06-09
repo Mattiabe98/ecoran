@@ -193,9 +193,10 @@ class PowerManager(xAppBase):
         
         # 2. Pass the INSTANCE of the base algorithm to the bandit
         self.contextual_bandit_model = BootstrappedTS(
-            base_algorithm=base_algo, # Pass the object, not the class
+            base_algorithm=base_algo,
             nchoices=len(self.arm_keys_ordered),
             nsamples=self.bts_nsamples,
+            batch_train=True, 
             beta_prior=self.bts_beta_prior,
             random_state=42
         )
@@ -596,7 +597,7 @@ class PowerManager(xAppBase):
                     
                     self._log(INFO, f"CB Lib: Updated ArmIdx '{self.last_selected_arm_index}' ({colored_key}) with reward {colored_reward}.")
                 except Exception as e:
-                    self._log.error(f"CB Lib: Error during model partial_fit/update: {e}") # Typo: self._log.error -> self._log(ERROR, ...)
+                    self._log(ERROR, f"CB Lib: Error during model partial_fit/update: {e}") 
             else:
                 self._log(WARN, f"CB Lib: Invalid reward ({current_reward_for_bandit}) for arm_idx '{self.last_selected_arm_index}'. Skipping update.")
         
