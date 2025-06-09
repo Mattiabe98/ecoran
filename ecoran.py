@@ -1033,7 +1033,8 @@ class PowerManager(xAppBase):
                         # DO NOT reset to a small number. Reset to zero, it will be updated by the first real value.
                         self.max_efficiency_seen = 0.0 
                     self.was_idle_in_previous_step = not is_active_ue_present
-
+                    
+                    self.max_efficiency_seen *= max_eff_decay_factor
                     self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
                     
                     # Calculate normalized efficiency SAFELY.
