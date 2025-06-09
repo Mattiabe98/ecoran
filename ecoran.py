@@ -1030,14 +1030,18 @@ class PowerManager(xAppBase):
                     # Reset max_efficiency when traffic resumes after an idle period
                     if is_active_ue_present and self.was_idle_in_previous_step:
                         self._log(INFO, f"Traffic resumed. Resetting max_efficiency_seen from {self.max_efficiency_seen:.3f}.")
-                        self.max_efficiency_seen = 1e-9
+                        # DO NOT reset to a small number. Reset to zero, it will be updated by the first real value.
+                        self.max_efficiency_seen = 0.0 
                     self.was_idle_in_previous_step = not is_active_ue_present
 
-                    # Update the max efficiency seen so far
                     self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
                     
-                    # Calculate normalized efficiency ONCE. This will be used for both reward and context.
-                    normalized_efficiency = current_raw_efficiency / self.max_efficiency_seen if self.max_efficiency_seen > 0 else 0.0
+                    # Calculate normalized efficiency SAFELY.
+                    # Use a small epsilon to prevent division by zero or a tiny number.
+                    safe_max_seen = max(self.max_efficiency_seen, 1e-6)
+                    normalized_efficiency = current_raw_efficiency / safe_max_seen
+                    # Clamp the result to a maximum of 1.0 to prevent explosions from weird data.
+                    normalized_efficiency = min(normalized_efficiency, 1.0)
 
 
                     # --- CONTEXT VECTOR CREATION ---
@@ -1084,7 +1088,7 @@ class PowerManager(xAppBase):
                     # HIERARCHY 3: Normal Operation (Idle or Active)
                     elif is_active_ue_present:
                         # ACTIVE & HEALTHY: Reward is based on shaped efficiency
-                        reward_for_bandit = normalized_efficiency # Shape the reward to be "greedy"
+                        reward_for_bandit = normalized_efficiency ** 2 # Shape the reward to be "greedy"
                         colored_max_seen = self._colorize(f'{self.max_efficiency_seen:.3f}', 'WHITE')
                         self._log(INFO, f"CB Reward (Active/Healthy): RawEff={current_raw_efficiency:.3f} b/uJ, NormEff={normalized_efficiency:.3f} (MaxSeen={colored_max_seen}). Final Shaped Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
                     
