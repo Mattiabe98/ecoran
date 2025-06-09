@@ -1068,20 +1068,20 @@ class PowerManager(xAppBase):
                     if self.pid_triggered_since_last_decision:
                         self.pid_triggered_since_last_decision = False
                         if action_delta_w <= 0:
-                            reward_for_bandit = -0.8
+                            reward_for_bandit = -0.4
                             self._log(WARN, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was wrong. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'RED')}")
                         else:
-                            reward_for_bandit = 0.25 # Strong incentive
+                            reward_for_bandit = 0.4 # Strong incentive
                             self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying strong incentive bonus. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
 
                     # HIERARCHY 2: Stressed State
                     elif current_ru_cpu_usage_control_val > (self.target_ru_cpu_usage * 0.99):
                         if action_delta_w > 0:
-                            reward_for_bandit = 0.1 # Gentle nudge
+                            reward_for_bandit = 0.05 # Gentle nudge
                         else:
                             danger_zone_start = self.target_ru_cpu_usage * 0.99
                             penalty_progress = (current_ru_cpu_usage_control_val - danger_zone_start) / (self.target_ru_cpu_usage - danger_zone_start)
-                            reward_for_bandit = -0.4 * np.clip(penalty_progress, 0, 1) # Milder penalty
+                            reward_for_bandit = -0.2 * np.clip(penalty_progress, 0, 1) # Milder penalty
                         reward_color = 'GREEN' if reward_for_bandit >=0 else 'RED'
                         self._log(INFO, f"CB Reward (Stressed): CPU at {current_ru_cpu_usage_control_val:.2f}%. Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
 
@@ -1095,15 +1095,15 @@ class PowerManager(xAppBase):
                     else: # TRUE IDLE: Not stressed and no UEs
                         holding_zone_width_w = 5.0
                         if tdp_for_reward_eval <= (self.tdp_min_w + holding_zone_width_w):
-                            if action_delta_w == 0: reward_for_bandit = 1.0
-                            elif action_delta_w < 0: reward_for_bandit = 0.2
-                            else: reward_for_bandit = -0.8
+                            if action_delta_w == 0: reward_for_bandit = 0.2
+                            elif action_delta_w < 0: reward_for_bandit = 0.05
+                            else: reward_for_bandit = -0.4
                         else:
                             if action_delta_w < 0:
                                 normalized_tdp_excursion = (tdp_for_reward_eval - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w) if (self.tdp_max_w - self.tdp_min_w) > 0 else 0
-                                reward_for_bandit = 0.4 * (1.0 - normalized_tdp_excursion) + 0.3
+                                reward_for_bandit = 0.2 * (1.0 - normalized_tdp_excursion) + 0.3
                             elif action_delta_w == 0: reward_for_bandit = 0.0
-                            else: reward_for_bandit = -0.8
+                            else: reward_for_bandit = -0.3 - 0.2 * normalized_tdp_excursion
                         
                         reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
                         self._log(INFO, f"CB Reward (True Idle): Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
