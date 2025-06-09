@@ -266,10 +266,7 @@ class PowerManager(xAppBase):
     def _get_current_context_vector(self,
                                    current_total_bits_dl_interval: float,
                                    current_total_bits_ul_interval: float,
-                                   current_prb_dl_total_percentage: float,
-                                   current_prb_ul_total_percentage: float,
                                    current_num_active_ues: int,
-                                   current_num_active_dus: int,
                                    current_ru_cpu_avg: float,
                                    current_actual_tdp: float) -> np.array:
         
@@ -282,20 +279,14 @@ class PowerManager(xAppBase):
         feature_values_ordered = [
             bits_dl_ps,
             bits_ul_ps,
-            current_prb_dl_total_percentage,
-            current_prb_ul_total_percentage,
             float(current_num_active_ues),
-            float(current_num_active_dus),
             current_ru_cpu_avg,
             current_actual_tdp # This is the TDP *before* the next action is decided
         ]
         feature_keys_ordered = [
             'total_bits_dl_per_second',
             'total_bits_ul_per_second',
-            'prb_total_dl_percentage',
-            'prb_total_ul_percentage',
             'num_active_ues',
-            'num_active_dus',
             'ru_cpu_usage',
             'current_tdp'
         ]
@@ -1015,6 +1006,12 @@ class PowerManager(xAppBase):
                     # 1. Determine system state and last action
                     cpu_usage = current_ru_cpu_usage_control_val
                     is_active_ue_present = (current_num_active_ues > 0)
+
+                    if is_active_ue_present and self.was_idle_in_previous_step:
+                        self._log(INFO, f"Traffic resumed. Resetting max_efficiency_seen from {self.max_efficiency_seen:.3f}.")
+                        self.max_efficiency_seen = 1e-9
+                    self.was_idle_in_previous_step = not is_active_ue_present
+                    
                     action_delta_w = 0.0
                     chosen_arm_key = "N/A"
                     if self.last_selected_arm_index is not None and self.arm_keys_ordered:
@@ -1094,10 +1091,7 @@ class PowerManager(xAppBase):
                     current_actual_tdp_for_context = self.current_tdp_w 
                     current_context_vec = self._get_current_context_vector(
                         total_dl_bits_interval, total_ul_bits_interval,
-                        total_prb_dl_percentage, total_prb_ul_percentage,
-                        current_num_active_ues, num_active_dus,
-                        current_ru_cpu_usage_control_val, current_actual_tdp_for_context
-                    )
+                        current_num_active_ues, current_ru_cpu_usage_control_val, current_actual_tdp_for_context)
 
                     # --- Rule-based idle descent logic ---
                     perform_bandit_step = True
