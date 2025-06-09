@@ -62,7 +62,7 @@ contextual_bandit:
     "inc_5": 5.0
     "inc_10": 10.0
   # ... other bandit params
-  context_dimension_features_only: 8 
+  context_dimension_features_only: 5 
   lambda_: 1.0            # Regularization (default 1.0 for LinTS)
   fit_intercept: True
   v_sq: 0.3             # Variance scaling for Thompson Sampling. Smaller = less exploration. Try values like 0.01, 0.05, 0.1, 0.25. Default in lib is 1.0.
