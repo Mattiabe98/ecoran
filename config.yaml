@@ -72,6 +72,15 @@ contextual_bandit:
   smoothing: null        # null (None in Python) or tuple e.g. [1, 20]
   random_state: 42       # Integer for reproducibility, or null for random
 
+
+bootstrapped_ts:
+  # The number of models to train. More models = more robust, but slightly slower.
+  # 20 is a very reasonable number.
+  n_bootstraps: 20
+  # We can go back to a smaller lambda because the bootstrapping itself
+  # provides a lot of regularization and stability.
+  lambda_: 1.0
+  fit_intercept: True
   # --- Idle Reward Logic Configuration ---
   # idle_reward_scaling_factor: 1.0 # Used by 'closeness_with_bonus' if you keep that.
   # idle_decrease_action_bonus: 0.2 # Used by 'closeness_with_bonus'
