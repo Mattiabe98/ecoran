@@ -81,6 +81,7 @@ bootstrapped_ts:
   # provides a lot of regularization and stability.
   lambda_: 1.0
   fit_intercept: True
+  beta_prior: "((1, 1), 5)"
   # --- Idle Reward Logic Configuration ---
   # idle_reward_scaling_factor: 1.0 # Used by 'closeness_with_bonus' if you keep that.
   # idle_decrease_action_bonus: 0.2 # Used by 'closeness_with_bonus'
