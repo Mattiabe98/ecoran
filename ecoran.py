@@ -207,7 +207,7 @@ class PowerManager(xAppBase):
         self.total_bits_from_previous_optimizer_interval: Optional[float] = None
         self.throughput_change_threshold_for_discard = float(cb_config.get('throughput_change_threshold_for_discard', 1.0))
         self.active_ue_throughput_threshold_mbps = float(cb_config.get('active_ue_throughput_threshold_mbps', 1.0))
-
+        self.was_idle_in_previous_step = True 
         self.norm_params = cb_config.get('normalization_parameters', {})
         self._ensure_default_norm_params()
 
