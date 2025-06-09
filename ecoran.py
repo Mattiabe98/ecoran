@@ -165,13 +165,14 @@ class PowerManager(xAppBase):
 
         self.lints_smoothing = cb_config.get('smoothing', None)
 
-        # --- NEW BootstrappedTS parameters with CORRECT names ---
+        # --- CORRECTED BootstrappedTS parameters ---
         bts_config = self.config.get('bootstrapped_ts', {})
-        # The parameter is 'nsamples', not 'n_bootstraps'
-        self.bts_nsamples = int(bts_config.get('nsamples', 20)) 
+        self.bts_nsamples = int(bts_config.get('nsamples', 20))
+        # These are for the *base* algorithm, not the bandit itself
         self.bts_lambda_ = float(bts_config.get('lambda_', 1.0))
         self.bts_fit_intercept = bool(bts_config.get('fit_intercept', True))
-        # BootstrappedTS can also use a beta_prior, so we can keep this logic
+        
+        # Get the beta prior config
         beta_prior_config = bts_config.get('beta_prior', "uniform_optimistic")
         self.bts_beta_prior = None
         if isinstance(beta_prior_config, str):
@@ -180,29 +181,24 @@ class PowerManager(xAppBase):
             elif beta_prior_config == "uniform_optimistic":
                 self.bts_beta_prior = ((1, 1), 3)
         
-        # --- REPLACE THE CONSTRUCTOR CALL ---
-        self._log(INFO, f"Initializing BootstrappedTS with nsamples={self.bts_nsamples}, lambda_={self.bts_lambda_}")
+        # --- CORRECTED CONSTRUCTOR CALL ---
+        self._log(INFO, f"Initializing BootstrappedTS with nsamples={self.bts_nsamples}")
         
-        # This import is still needed for the base algorithm
-        from contextualbandits.linreg import LinearRegression
+        # 1. Create an instance of the base algorithm with its parameters
+        base_algo = LinearRegression(
+            lambda_=self.bts_lambda_,
+            fit_intercept=self.bts_fit_intercept
+        )
         
-        # The base algorithm needs its own parameters passed as a dictionary
-        base_algo_params = {
-            'lambda_' : self.bts_lambda_,
-            'fit_intercept' : self.bts_fit_intercept
-        }
-        
+        # 2. Pass the INSTANCE of the base algorithm to the bandit
         self.contextual_bandit_model = BootstrappedTS(
-            base_algorithm=LinearRegression,
+            base_algorithm=base_algo, # Pass the object, not the class
             nchoices=len(self.arm_keys_ordered),
-            nsamples=self.bts_nsamples, # Use the correct parameter name 'nsamples'
-            
-            # Pass the parameters for the base algorithm in a dictionary
-            base_algorithm_params=base_algo_params, 
-            
-            beta_prior=self.bts_beta_prior, # We can still use the optimistic prior
+            nsamples=self.bts_nsamples,
+            beta_prior=self.bts_beta_prior,
             random_state=42
         )
+
 
         self.optimizer_target_tdp_w = self.current_tdp_w
         self.last_selected_arm_index: Optional[int] = None
