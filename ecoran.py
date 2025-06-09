@@ -220,6 +220,7 @@ class PowerManager(xAppBase):
         self.current_num_active_ues_for_log: int = 0
         self.pid_triggered_since_last_decision = False
         self.max_efficiency_seen = 1e-9
+        self.max_eff_decay_factor = 0.995 # Add this new parameter
 
         self.COLORS = {
             'RED': '\033[91m',
@@ -1058,6 +1059,8 @@ class PowerManager(xAppBase):
                         current_raw_efficiency = 0.0
                         if num_kpm_reports_processed > 0 and interval_energy_uj is not None and interval_energy_uj > 1e-3:
                             current_raw_efficiency = total_bits_optimizer_interval / interval_energy_uj
+                        
+                        self.max_efficiency_seen *= self.max_eff_decay_factor
                         
                         self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
                         normalized_efficiency = current_raw_efficiency / self.max_efficiency_seen if self.max_efficiency_seen > 0 else 0.0
