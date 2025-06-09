@@ -17,7 +17,7 @@ import json
 
 # Attempt to import contextualbandits library
 try:
-    from contextualbandits.online import LinTS # CHANGED FROM LinUCB
+    from contextualbandits.online import BootstrappedTS  # CHANGED FROM LinUCB
 except ImportError:
     print("E: Failed to import LinTS from contextualbandits.online. Please install the library: pip install contextualbandits")
     sys.exit(1)
@@ -165,28 +165,22 @@ class PowerManager(xAppBase):
 
         self.lints_smoothing = cb_config.get('smoothing', None)
 
-        self._log(INFO, f"Initializing LinTS with nchoices={len(self.arm_keys_ordered)}, "
-                        f"lambda_={self.lints_lambda_}, fit_intercept={self.lints_fit_intercept}, "
-                        f"v_sq={self.lints_v_sq}, sample_from='{self.lints_sample_from}', "
-                        f"method='{self.lints_method}', beta_prior='{self.lints_beta_prior}', "
-                        f"random_state={self.lints_random_state}")
+        bts_config = self.config.get('bootstrapped_ts', {})
+        self.bts_n_bootstraps = int(bts_config.get('n_bootstraps', 20)) # Number of models to train
+        self.bts_lambda_ = float(bts_config.get('lambda_', 1.0))
+        self.bts_fit_intercept = bool(bts_config.get('fit_intercept', True))
+        self._log(INFO, f"Initializing BootstrappedTS with n_bootstraps={self.bts_n_bootstraps}, lambda_={self.bts_lambda_}")
+        from contextualbandits.linreg import LinearRegression
 
-        self.contextual_bandit_model = LinTS(
+        self.contextual_bandit_model = BootstrappedTS(
+            base_algorithm=LinearRegression, # Use a linear model as the base
             nchoices=len(self.arm_keys_ordered),
-            lambda_=self.lints_lambda_,
-            fit_intercept=self.lints_fit_intercept,
-            v_sq=self.lints_v_sq,
-            sample_from=self.lints_sample_from,
-            # n_presampled=None, # Default
-            # sample_unique=True, # Default
-            # use_float=False, # Default
-            method=self.lints_method,
-            beta_prior=self.lints_beta_prior,
-            smoothing=self.lints_smoothing,
-            # noise_to_smooth=True, # Default
-            # assume_unique_reward=False, # Default
-            random_state=self.lints_random_state,
-            # njobs=1 # Default
+            n_bootstraps=self.bts_n_bootstraps,
+            
+            # Pass parameters for the base LinearRegression models
+            lambda_ = self.bts_lambda_,
+            fit_intercept = self.bts_fit_intercept,
+            random_state=42
         )
 
         self.optimizer_target_tdp_w = self.current_tdp_w
