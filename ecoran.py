@@ -1084,7 +1084,7 @@ class PowerManager(xAppBase):
                     # HIERARCHY 3: Normal Operation (Idle or Active)
                     elif is_active_ue_present:
                         # ACTIVE & HEALTHY: Reward is based on shaped efficiency
-                        reward_for_bandit = normalized_efficiency ** 4 # Shape the reward to be "greedy"
+                        reward_for_bandit = normalized_efficiency ** 3 # Shape the reward to be "greedy"
                         colored_max_seen = self._colorize(f'{self.max_efficiency_seen:.3f}', 'WHITE')
                         self._log(INFO, f"CB Reward (Active/Healthy): RawEff={current_raw_efficiency:.3f} b/uJ, NormEff={normalized_efficiency:.3f} (MaxSeen={colored_max_seen}). Final Shaped Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
                     
