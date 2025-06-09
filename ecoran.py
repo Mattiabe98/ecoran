@@ -277,45 +277,49 @@ class PowerManager(xAppBase):
         return max(0.0, min(1.0, normalized)) # Clamp to [0,1]
     
     
+
     def _get_current_context_vector(self,
-                                   current_total_bits_dl_interval: float,
-                                   current_total_bits_ul_interval: float,
-                                   current_num_active_ues: int,
-                                   current_ru_cpu_avg: float,
-                                   current_actual_tdp: float) -> np.array:
+                                       current_num_active_ues: int,
+                                       current_ru_cpu_avg: float,
+                                       current_actual_tdp: float,
+                                       current_raw_efficiency: float
+                                       ) -> np.array:
         
-        interval_s = self.optimizer_decision_interval_s
-        if interval_s <=0: interval_s = 1.0 # Should not happen with config
+        def _normalize(val, min_val, max_val):
+            if (max_val - min_val) < 1e-6: return 0.5
+            return np.clip((val - min_val) / (max_val - min_val), 0.0, 1.0)
     
-        bits_dl_ps = current_total_bits_dl_interval / interval_s if interval_s > 0 else 0.0
-        bits_ul_ps = current_total_bits_ul_interval / interval_s if interval_s > 0 else 0.0
+        # --- FINAL, MINIMALIST FEATURE ENGINEERING ---
     
-        feature_values_ordered = [
-            bits_dl_ps,
-            bits_ul_ps,
-            float(current_num_active_ues),
-            current_ru_cpu_avg,
-            current_actual_tdp # This is the TDP *before* the next action is decided
-        ]
-        feature_keys_ordered = [
-            'total_bits_dl_per_second',
-            'total_bits_ul_per_second',
-            'num_active_ues',
-            'ru_cpu_usage',
-            'current_tdp'
-        ]
+        # Feature 1: Normalized Efficiency. The most direct performance signal.
+        # Normalize against the max we've seen to adapt to traffic conditions.
+        feature_1_norm_eff = current_raw_efficiency / self.max_efficiency_seen if self.max_efficiency_seen > 0 else 0.0
     
-        if len(feature_values_ordered) != self.context_dimension_features_only:
-            self._log(ERROR, f"Number of actual features ({len(feature_values_ordered)}) "
-                             f"does not match configured context_dimension_features_only ({self.context_dimension_features_only}). "
-                             "Check feature list and config.")
-            return np.ones(self.context_dimension_features_only) * 0.5 # Fallback
+        # Feature 2: CPU Headroom, normalized. The most direct risk signal.
+        cpu_headroom = self.target_ru_cpu_usage - current_ru_cpu_avg
+        norm_params_cpu = self.norm_params.get('cpu_headroom', {'min': -5.0, 'max': 20.0})
+        feature_2_cpu_headroom = _normalize(cpu_headroom, norm_params_cpu.get('min'), norm_params_cpu.get('max'))
     
-        normalized_features = np.array([
-            self._normalize_feature(val, key) for val, key in zip(feature_values_ordered, feature_keys_ordered)
+        # Feature 3: TDP Position, normalized. The most direct action-space signal.
+        feature_3_tdp_pos = _normalize(current_actual_tdp, self.tdp_min_w, self.tdp_max_w)
+    
+        # Feature 4: Number of Active UEs, normalized. The most direct load context signal.
+        norm_params_ues = self.norm_params.get('num_active_ues', {'min': 0.0, 'max': 10.0})
+        feature_4_num_ues = _normalize(float(current_num_active_ues), norm_params_ues.get('min'), norm_params_ues.get('max'))
+        
+        # The final, powerful, non-redundant feature vector
+        final_features = np.array([
+            feature_1_norm_eff,
+            feature_2_cpu_headroom,
+            feature_3_tdp_pos,
+            feature_4_num_ues
         ])
         
-        return normalized_features
+        self._log(DEBUG_ALL, f"Context Vector (Normalized): [Eff:{final_features[0]:.2f}, "
+                             f"CPU_Headroom:{final_features[1]:.2f}, TDP_Pos:{final_features[2]:.2f}, "
+                             f"Num_UEs:{final_features[3]:.2f}]")
+    
+        return final_features
     
     def _setup_logging(self):
         self.logger = logging.getLogger("EcoRANPowerManager")
@@ -1105,10 +1109,19 @@ class PowerManager(xAppBase):
                     
                     # Context for NEXT decision uses the CURRENT actual TDP
                     current_actual_tdp_for_context = self.current_tdp_w 
-                    current_context_vec = self._get_current_context_vector(
-                        total_dl_bits_interval, total_ul_bits_interval,
-                        current_num_active_ues, current_ru_cpu_usage_control_val, current_actual_tdp_for_context)
 
+                    if not current_raw_efficiency:
+                        if num_kpm_reports_processed > 0 and interval_energy_uj is not None and interval_energy_uj > 1e-3:
+                            current_raw_efficiency = total_bits_optimizer_interval / interval_energy_uj
+                        else:
+                            current_raw_efficiency = 0
+                    current_context_vec = self._get_current_context_vector(
+                        # We no longer need to pass total_bits_interval
+                        current_num_active_ues,
+                        current_ru_cpu_usage_control_val,
+                        current_actual_tdp_for_context,
+                        current_raw_efficiency 
+                    )
                     # --- Rule-based idle descent logic ---
                     perform_bandit_step = True
                     if enable_rule_based_idle_descent and is_effectively_idle and \
