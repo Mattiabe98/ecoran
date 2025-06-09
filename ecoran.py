@@ -17,7 +17,8 @@ import json
 
 # Attempt to import contextualbandits library
 try:
-    from contextualbandits.online import BootstrappedTS  # CHANGED FROM LinUCB
+    from contextualbandits.online import BootstrappedTS
+    from contextualbandits.linreg import LinearRegression
 except ImportError:
     print("E: Failed to import LinTS from contextualbandits.online. Please install the library: pip install contextualbandits")
     sys.exit(1)
