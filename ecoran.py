@@ -278,48 +278,47 @@ class PowerManager(xAppBase):
     
     
 
-    def _get_current_context_vector(self,
-                                       current_num_active_ues: int,
-                                       current_ru_cpu_avg: float,
-                                       current_actual_tdp: float,
-                                       current_raw_efficiency: float
-                                       ) -> np.array:
-        
-        def _normalize(val, min_val, max_val):
-            if (max_val - min_val) < 1e-6: return 0.5
-            return np.clip((val - min_val) / (max_val - min_val), 0.0, 1.0)
+def _get_current_context_vector(self,
+                                   current_num_active_ues: int,
+                                   current_ru_cpu_avg: float,
+                                   current_actual_tdp: float,
+                                   # The normalized efficiency is now passed in
+                                   normalized_efficiency: float 
+                                   ) -> np.array:
     
-        # --- FINAL, MINIMALIST FEATURE ENGINEERING ---
+    def _normalize(val, min_val, max_val):
+        if (max_val - min_val) < 1e-6: return 0.5
+        return np.clip((val - min_val) / (max_val - min_val), 0.0, 1.0)
+
+    # --- MINIMALIST FEATURE ENGINEERING ---
+
+    # Feature 1: Normalized Efficiency (already calculated and passed in).
+    feature_1_norm_eff = normalized_efficiency
+
+    # Feature 2: CPU Headroom, normalized.
+    cpu_headroom = self.target_ru_cpu_usage - current_ru_cpu_avg
+    norm_params_cpu = self.norm_params.get('cpu_headroom', {'min': -5.0, 'max': 20.0})
+    feature_2_cpu_headroom = _normalize(cpu_headroom, norm_params_cpu.get('min'), norm_params_cpu.get('max'))
+
+    # Feature 3: TDP Position, normalized.
+    feature_3_tdp_pos = _normalize(current_actual_tdp, self.tdp_min_w, self.tdp_max_w)
+
+    # Feature 4: Number of Active UEs, normalized.
+    norm_params_ues = self.norm_params.get('num_active_ues', {'min': 0.0, 'max': 10.0})
+    feature_4_num_ues = _normalize(float(current_num_active_ues), norm_params_ues.get('min'), norm_params_ues.get('max'))
     
-        # Feature 1: Normalized Efficiency. The most direct performance signal.
-        # Normalize against the max we've seen to adapt to traffic conditions.
-        feature_1_norm_eff = current_raw_efficiency / self.max_efficiency_seen if self.max_efficiency_seen > 0 else 0.0
+    final_features = np.array([
+        feature_1_norm_eff,
+        feature_2_cpu_headroom,
+        feature_3_tdp_pos,
+        feature_4_num_ues
+    ])
     
-        # Feature 2: CPU Headroom, normalized. The most direct risk signal.
-        cpu_headroom = self.target_ru_cpu_usage - current_ru_cpu_avg
-        norm_params_cpu = self.norm_params.get('cpu_headroom', {'min': -5.0, 'max': 20.0})
-        feature_2_cpu_headroom = _normalize(cpu_headroom, norm_params_cpu.get('min'), norm_params_cpu.get('max'))
-    
-        # Feature 3: TDP Position, normalized. The most direct action-space signal.
-        feature_3_tdp_pos = _normalize(current_actual_tdp, self.tdp_min_w, self.tdp_max_w)
-    
-        # Feature 4: Number of Active UEs, normalized. The most direct load context signal.
-        norm_params_ues = self.norm_params.get('num_active_ues', {'min': 0.0, 'max': 10.0})
-        feature_4_num_ues = _normalize(float(current_num_active_ues), norm_params_ues.get('min'), norm_params_ues.get('max'))
-        
-        # The final, powerful, non-redundant feature vector
-        final_features = np.array([
-            feature_1_norm_eff,
-            feature_2_cpu_headroom,
-            feature_3_tdp_pos,
-            feature_4_num_ues
-        ])
-        
-        self._log(DEBUG_ALL, f"Context Vector (Normalized): [Eff:{final_features[0]:.2f}, "
-                             f"CPU_Headroom:{final_features[1]:.2f}, TDP_Pos:{final_features[2]:.2f}, "
-                             f"Num_UEs:{final_features[3]:.2f}]")
-    
-        return final_features
+    self._log(DEBUG_ALL, f"Context Vector (Normalized): [Eff:{final_features[0]:.2f}, "
+                         f"CPU_Headroom:{final_features[1]:.2f}, TDP_Pos:{final_features[2]:.2f}, "
+                         f"Num_UEs:{final_features[3]:.2f}]")
+
+    return final_features
     
     def _setup_logging(self):
         self.logger = logging.getLogger("EcoRANPowerManager")
@@ -1022,126 +1021,96 @@ class PowerManager(xAppBase):
                     # --- HIERARCHICAL REWARD CALCULATION ---
 
                     # 1. Determine system state and last action
-                    cpu_usage = current_ru_cpu_usage_control_val
-                    is_active_ue_present = (current_num_active_ues > 0)
+                    current_raw_efficiency = 0.0
+                    if num_kpm_reports_processed > 0 and interval_energy_uj is not None and interval_energy_uj > 1e-3:
+                        current_raw_efficiency = total_bits_optimizer_interval / interval_energy_uj
 
+                    # --- ADAPTIVE NORMALIZATION & STATE CHANGE LOGIC ---
+                    is_active_ue_present = (current_num_active_ues > 0)
+                    
+                    # Reset max_efficiency when traffic resumes after an idle period
                     if is_active_ue_present and self.was_idle_in_previous_step:
                         self._log(INFO, f"Traffic resumed. Resetting max_efficiency_seen from {self.max_efficiency_seen:.3f}.")
                         self.max_efficiency_seen = 1e-9
                     self.was_idle_in_previous_step = not is_active_ue_present
+
+                    # Update the max efficiency seen so far
+                    self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
                     
+                    # Calculate normalized efficiency ONCE. This will be used for both reward and context.
+                    normalized_efficiency = current_raw_efficiency / self.max_efficiency_seen if self.max_efficiency_seen > 0 else 0.0
+
+
+                    # --- CONTEXT VECTOR CREATION ---
+                    current_actual_tdp_for_context = self.current_tdp_w
+                    current_context_vec = self._get_current_context_vector(
+                        current_num_active_ues,
+                        current_ru_cpu_usage_control_val,
+                        current_actual_tdp_for_context,
+                        # Pass the pre-calculated normalized efficiency
+                        normalized_efficiency 
+                    )
+
+
+                    # --- HIERARCHICAL REWARD CALCULATION ---
+                    
+                    # Get last action info
                     action_delta_w = 0.0
                     chosen_arm_key = "N/A"
                     if self.last_selected_arm_index is not None and self.arm_keys_ordered:
                         chosen_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
                         action_delta_w = self.bandit_actions.get(chosen_arm_key, 0.0)
 
-                    # --- HIERARCHY 1: The PID trigger is a special event ---
+                    # HIERARCHY 1: PID Trigger
                     if self.pid_triggered_since_last_decision:
                         self.pid_triggered_since_last_decision = False
                         if action_delta_w <= 0:
                             reward_for_bandit = -1.0
                             self._log(WARN, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was wrong. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'RED')}")
                         else:
-                            reward_for_bandit = 0.25
-                            self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying incentive bonus. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
+                            reward_for_bandit = 0.25 # Strong incentive
+                            self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying strong incentive bonus. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
 
-                    # --- HIERARCHY 2: If no PID, evaluate based on the system state ---
-                    elif cpu_usage > (self.target_ru_cpu_usage * 0.99):
-                        # --- STRESSED STATE ---
+                    # HIERARCHY 2: Stressed State
+                    elif current_ru_cpu_usage_control_val > (self.target_ru_cpu_usage * 0.99):
                         if action_delta_w > 0:
-                            reward_for_bandit = 0.1
+                            reward_for_bandit = 0.1 # Gentle nudge
                         else:
                             danger_zone_start = self.target_ru_cpu_usage * 0.99
-                            penalty_progress = (cpu_usage - danger_zone_start) / (self.target_ru_cpu_usage - danger_zone_start)
-                            reward_for_bandit = -0.5 * np.clip(penalty_progress, 0, 1)
+                            penalty_progress = (current_ru_cpu_usage_control_val - danger_zone_start) / (self.target_ru_cpu_usage - danger_zone_start)
+                            reward_for_bandit = -0.5 * np.clip(penalty_progress, 0, 1) # Milder penalty
                         reward_color = 'GREEN' if reward_for_bandit >=0 else 'RED'
-                        self._log(INFO, f"CB Reward (Stressed): CPU at {cpu_usage:.2f}%. Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
+                        self._log(INFO, f"CB Reward (Stressed): CPU at {current_ru_cpu_usage_control_val:.2f}%. Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
 
+                    # HIERARCHY 3: Normal Operation (Idle or Active)
                     elif is_active_ue_present:
-                        # --- ACTIVE & HEALTHY STATE ---
-                        current_raw_efficiency = 0.0
-                        if num_kpm_reports_processed > 0 and interval_energy_uj is not None and interval_energy_uj > 1e-3:
-                            current_raw_efficiency = total_bits_optimizer_interval / interval_energy_uj
-                        
-                        self.max_efficiency_seen *= self.max_eff_decay_factor
-                        
-                        self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
-                        normalized_efficiency = current_raw_efficiency / self.max_efficiency_seen if self.max_efficiency_seen > 0 else 0.0
-                        
-                        reward_for_bandit = normalized_efficiency ** 4
-                        
-                        # Add your requested raw efficiency and colorized MaxSeen to the log
+                        # ACTIVE & HEALTHY: Reward is based on shaped efficiency
+                        reward_for_bandit = normalized_efficiency ** 4 # Shape the reward to be "greedy"
                         colored_max_seen = self._colorize(f'{self.max_efficiency_seen:.3f}', 'WHITE')
-                        self._log(INFO, f"CB Reward (Active/Healthy): RawEff={self._colorize(f'{current_raw_efficiency:.3f}', 'YELLOW')} b/uJ, NormEff={normalized_efficiency:.3f} (MaxSeen={colored_max_seen}). Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
+                        self._log(INFO, f"CB Reward (Active/Healthy): RawEff={current_raw_efficiency:.3f} b/uJ, NormEff={normalized_efficiency:.3f} (MaxSeen={colored_max_seen}). Final Shaped Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
                     
-                    else: # Not stressed and no active UEs
-                        # --- TRUE IDLE STATE ---
-                        if abs(tdp_for_reward_eval - self.tdp_min_w) < 5.0: # Use your 5W holding zone
-                            # At/Near the floor, holding is the best action.
-                            if action_delta_w == 0:
-                                reward_for_bandit = 1.0
-                            elif action_delta_w < 0:
-                                reward_for_bandit = 0.2 # Still okay to decrease, but less rewarded
-                            else: # increase
-                                reward_for_bandit = -1.0
+                    else: # TRUE IDLE: Not stressed and no UEs
+                        holding_zone_width_w = 5.0
+                        if tdp_for_reward_eval <= (self.tdp_min_w + holding_zone_width_w):
+                            if action_delta_w == 0: reward_for_bandit = 1.0
+                            elif action_delta_w < 0: reward_for_bandit = 0.2
+                            else: reward_for_bandit = -1.0
                         else:
-                            # Not at the floor, decreasing is best.
                             if action_delta_w < 0:
                                 normalized_tdp_excursion = (tdp_for_reward_eval - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w) if (self.tdp_max_w - self.tdp_min_w) > 0 else 0
                                 reward_for_bandit = 0.5 * (1.0 - normalized_tdp_excursion) + 0.3
-                            elif action_delta_w == 0:
-                                reward_for_bandit = 0.0 # Neutral, no incentive to wait when far from goal
-                            else: # action_delta_w > 0
-                                reward_for_bandit = -1.0 # Worst action
+                            elif action_delta_w == 0: reward_for_bandit = 0.0
+                            else: reward_for_bandit = -1.0
                         
                         reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
                         self._log(INFO, f"CB Reward (True Idle): Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
 
-                    # Final clipping as a safety net
+                    # Final clipping and setting the log variable
                     reward_for_bandit = np.clip(reward_for_bandit, -1.0, 1.0)
-                    
-                    # Consume the flag after the if/else block, ensuring it's always reset
-                    if self.pid_triggered_since_last_decision:
-                        self.pid_triggered_since_last_decision = False
-                    
                     self.most_recent_calculated_reward_for_log = reward_for_bandit
-                    
-                    # Context for NEXT decision uses the CURRENT actual TDP
-                    current_actual_tdp_for_context = self.current_tdp_w 
 
-                    if not current_raw_efficiency:
-                        if num_kpm_reports_processed > 0 and interval_energy_uj is not None and interval_energy_uj > 1e-3:
-                            current_raw_efficiency = total_bits_optimizer_interval / interval_energy_uj
-                        else:
-                            current_raw_efficiency = 0
-                    current_context_vec = self._get_current_context_vector(
-                        # We no longer need to pass total_bits_interval
-                        current_num_active_ues,
-                        current_ru_cpu_usage_control_val,
-                        current_actual_tdp_for_context,
-                        current_raw_efficiency 
-                    )
-                    # --- Rule-based idle descent logic ---
-                    perform_bandit_step = True
-                    if enable_rule_based_idle_descent and is_effectively_idle and \
-                       self.current_tdp_w > rule_idle_descent_tdp_thresh and \
-                       rule_idle_descent_steps_taken < rule_idle_descent_max_steps:
-                        
-                        perform_bandit_step = False # Rule overrides bandit for this step
-                        rule_idle_descent_steps_taken += 1
-                        new_rule_tdp = max(self.tdp_min_w, self.current_tdp_w - rule_idle_descent_step_w)
-                        self._log(INFO, f"RULE_IDLE_DESCENT: Active (Step {rule_idle_descent_steps_taken}/{rule_idle_descent_max_steps}). "
-                                        f"TDP {self.current_tdp_w:.1f}W > Thresh {rule_idle_descent_tdp_thresh:.1f}W. "
-                                        f"Forcing TDP to {new_rule_tdp:.1f}W.")
-                        self._set_tdp_limit_w(new_rule_tdp, context="Rule-Based Idle Descent")
-                        self.optimizer_target_tdp_w = self._read_current_tdp_limit_w()
-                        # Don't update bandit with this forced action, or clear last_selected_arm
-                        self.last_selected_arm_index = None 
-                        self.last_context_vector = None
-                    
-                    if perform_bandit_step:
-                        self._run_contextual_bandit_optimizer_step(reward_for_bandit, current_context_vec, significant_throughput_change)
+                    # Now, run the optimizer step
+                    self._run_contextual_bandit_optimizer_step(reward_for_bandit, current_context_vec, significant_throughput_change)
                     
                     self.last_optimizer_run_time = loop_start_time
                 
