@@ -1034,7 +1034,7 @@ class PowerManager(xAppBase):
                         self.max_efficiency_seen = 0.0 
                     self.was_idle_in_previous_step = not is_active_ue_present
                     
-                    self.max_efficiency_seen *= max_eff_decay_factor
+                    self.max_efficiency_seen *= self.max_eff_decay_factor
                     self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
                     
                     # Calculate normalized efficiency SAFELY.
