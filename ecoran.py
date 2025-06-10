@@ -1057,24 +1057,39 @@ class PowerManager(xAppBase):
                             reward_for_bandit = 0.4 # Strong incentive
                             self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying strong incentive bonus. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
 
-                    # HIERARCHY 2: Stressed State
-                    elif current_ru_cpu_usage_control_val > (self.target_ru_cpu_usage * 0.99):
-                        if action_delta_w > 0:
-                            reward_for_bandit = 0.05 # Gentle nudge
-                        else:
-                            danger_zone_start = self.target_ru_cpu_usage * 0.99
-                            penalty_progress = (current_ru_cpu_usage_control_val - danger_zone_start) / (self.target_ru_cpu_usage - danger_zone_start)
-                            reward_for_bandit = -0.2 * np.clip(penalty_progress, 0, 1) # Milder penalty
-                        reward_color = 'GREEN' if reward_for_bandit >=0 else 'RED'
-                        self._log(INFO, f"CB Reward (Stressed): CPU at {current_ru_cpu_usage_control_val:.2f}%. Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
+                    # # HIERARCHY 2: Stressed State
+                    # elif current_ru_cpu_usage_control_val > (self.target_ru_cpu_usage * 0.99):
+                    #     if action_delta_w > 0:
+                    #         reward_for_bandit = 0.05 # Gentle nudge
+                    #     else:
+                    #         danger_zone_start = self.target_ru_cpu_usage * 0.99
+                    #         penalty_progress = (current_ru_cpu_usage_control_val - danger_zone_start) / (self.target_ru_cpu_usage - danger_zone_start)
+                    #         reward_for_bandit = -0.2 * np.clip(penalty_progress, 0, 1) # Milder penalty
+                    #     reward_color = 'GREEN' if reward_for_bandit >=0 else 'RED'
+                    #     self._log(INFO, f"CB Reward (Stressed): CPU at {current_ru_cpu_usage_control_val:.2f}%. Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
 
                     # HIERARCHY 3: Normal Operation (Idle or Active)
+                    # elif is_active_ue_present:
+                    #     # ACTIVE & HEALTHY: Reward is based on shaped efficiency
+                    #     reward_for_bandit = normalized_efficiency ** 2 # Shape the reward to be "greedy"
+                    #     colored_max_seen = self._colorize(f'{self.max_efficiency_seen:.3f}', 'WHITE')
+                    #     self._log(INFO, f"CB Reward (Active/Healthy): RawEff={current_raw_efficiency:.3f} b/uJ, NormEff={normalized_efficiency:.3f} (MaxSeen={colored_max_seen}). Final Shaped Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
+                
                     elif is_active_ue_present:
-                        # ACTIVE & HEALTHY: Reward is based on shaped efficiency
-                        reward_for_bandit = normalized_efficiency ** 2 # Shape the reward to be "greedy"
+                        # --- Start with the efficiency-based reward as the default ---
+                        reward_for_bandit = normalized_efficiency ** 2
+                        
+                        # --- Now, apply a penalty if stressed AND action was wrong ---
+                        if current_ru_cpu_usage_control_val > (self.target_ru_cpu_usage * 0.99):
+                            if action_delta_w <= 0: # If we held or decreased TDP when stressed...
+                                penalty = 0.3 # A fixed penalty to apply
+                                self._log(WARN, f"CB REWARD MOD: Stressed CPU at {current_ru_cpu_usage_control_val:.2f}%. Applying penalty of {penalty} to efficiency reward.")
+                                reward_for_bandit -= penalty
+                        
+                        # Log the result
                         colored_max_seen = self._colorize(f'{self.max_efficiency_seen:.3f}', 'WHITE')
-                        self._log(INFO, f"CB Reward (Active/Healthy): RawEff={current_raw_efficiency:.3f} b/uJ, NormEff={normalized_efficiency:.3f} (MaxSeen={colored_max_seen}). Final Shaped Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
-                    
+                        reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
+                        self._log(INFO, f"CB Reward (Active): RawEff={current_raw_efficiency:.3f} b/uJ, NormEff={normalized_efficiency:.3f}, MaxSeen={colored_max_seen}. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
                     else: # TRUE IDLE: Not stressed and no UEs
                         holding_zone_width_w = 5.0
                         if tdp_for_reward_eval <= (self.tdp_min_w + holding_zone_width_w):
