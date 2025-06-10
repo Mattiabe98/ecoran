@@ -247,13 +247,9 @@ class PowerManager(xAppBase):
     def _ensure_default_norm_params(self):
         """Ensure essential normalization parameters have defaults if not in config."""
         defaults = {
-            'bias': {'min': 1.0, 'max': 1.0}, # If we were adding bias manually
             'total_bits_dl_per_second': {'min': 0.0, 'max': 1e9}, # 1 Gbps
             'total_bits_ul_per_second': {'min': 0.0, 'max': 1e9}, # 1 Gbps
-            'prb_total_dl_percentage': {'min': 0.0, 'max': float(len(self.gnb_ids_map) or 1.0) * 100.0},
-            'prb_total_ul_percentage': {'min': 0.0, 'max': float(len(self.gnb_ids_map) or 1.0) * 100.0},
             'num_active_ues': {'min': 0, 'max': 100.0},
-            'num_active_dus': {'min': 0, 'max': float(len(self.gnb_ids_map) or 1.0)},
             'ru_cpu_usage': {'min': 80.0, 'max': 100.0}, # Assuming RU CPU won't go below 80%
             'current_tdp': {'min': float(self.tdp_min_w), 'max': float(self.tdp_max_w)},
             'efficiency_reward': {'min': 0.0, 'max': 5.0} # Bits/uJ - adjust based on expected range
@@ -994,7 +990,6 @@ class PowerManager(xAppBase):
                     total_prb_dl_percentage = sum(d.get('dl_prb_sum_percentage', 0.0) for d in kpm_summed_data.values())
                     total_prb_ul_percentage = sum(d.get('ul_prb_sum_percentage', 0.0) for d in kpm_summed_data.values())
                     num_kpm_reports_processed = sum(d.get('reports_in_interval',0) for d in kpm_summed_data.values())
-                    num_active_dus = sum(1 for d in kpm_summed_data.values() if d.get('dl_bits',0) + d.get('ul_bits',0) > 1e-6)
 
                     significant_throughput_change = False
                     if self.total_bits_from_previous_optimizer_interval is not None: 
@@ -1104,7 +1099,9 @@ class PowerManager(xAppBase):
                                 normalized_tdp_excursion = (tdp_for_reward_eval - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w) if (self.tdp_max_w - self.tdp_min_w) > 0 else 0
                                 reward_for_bandit = 0.2 * (1.0 - normalized_tdp_excursion) + 0.3
                             elif action_delta_w == 0: reward_for_bandit = 0.0
-                            else: reward_for_bandit = -0.3 - 0.2 * normalized_tdp_excursion
+                            else:
+                                normalized_tdp_excursion = (tdp_for_reward_eval - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w) if (self.tdp_max_w - self.tdp_min_w) > 0 else 0
+                                reward_for_bandit = -0.3 - 0.2 * normalized_tdp_excursion
                         
                         reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
                         self._log(INFO, f"CB Reward (True Idle): Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
