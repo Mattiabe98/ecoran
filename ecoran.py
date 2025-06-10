@@ -248,31 +248,14 @@ class PowerManager(xAppBase):
     def _ensure_default_norm_params(self):
         """Ensure essential normalization parameters have defaults if not in config."""
         defaults = {
-            'total_bits_dl_per_second': {'min': 0.0, 'max': 1e9}, # 1 Gbps
-            'total_bits_ul_per_second': {'min': 0.0, 'max': 1e9}, # 1 Gbps
             'num_active_ues': {'min': 0, 'max': 100.0},
-            'ru_cpu_usage': {'min': 80.0, 'max': 100.0}, # Assuming RU CPU won't go below 80%
-            'current_tdp': {'min': float(self.tdp_min_w), 'max': float(self.tdp_max_w)},
-            'efficiency_reward': {'min': 0.0, 'max': 5.0} # Bits/uJ - adjust based on expected range
+            'cpu_headroom:' {'min': -5.0, 'max': 20.0}
         }
         for key, default_val in defaults.items():
             if key not in self.norm_params:
                 self.norm_params[key] = default_val
                 self._log(INFO, f"Normalization param for '{key}' not in config, using default: {default_val}")
-
-
-    def _normalize_feature(self, value: float, feature_key: str) -> float:
-        params = self.norm_params.get(feature_key)
-        if not params:
-            self._log(WARN, f"Normalization params not found for {feature_key}. Returning raw value: {value}")
-            return value 
-        val_min = float(params.get('min', 0.0))
-        val_max = float(params.get('max', 1.0))
-        if val_max == val_min: 
-            return 0.5 if value == val_min else (0.0 if value < val_min else 1.0) # Avoid div by zero
-        normalized = (value - val_min) / (val_max - val_min)
-        return max(0.0, min(1.0, normalized)) # Clamp to [0,1]
-    
+  
 
     def _get_current_context_vector(self,
                                        current_num_active_ues: int,
