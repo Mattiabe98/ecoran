@@ -1058,11 +1058,15 @@ class PowerManager(xAppBase):
                     # Decay pushes the agent to hold, disable it.
                     # self.max_efficiency_seen *= self.max_eff_decay_factor 
                     # Ensure the new efficiency measurement can set the max if it's currently zero.
-                    if not pid_fired_this_interval:
+
+                    # Update maximum efficiency seen only if the result happened in a stable state
+                    is_cpu_stressed = current_ru_cpu_usage_control_val > (self.target_ru_cpu_usage * 0.99)
+                    is_interval_unstable = pid_fired_this_interval or is_cpu_stressed
+                    if not is_interval_unstable:
                         # Only trust efficiency values from stable intervals to set the new benchmark
                         self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
                     else:
-                        self._log(WARN, f"PID triggered. Suppressing max_efficiency_seen update to prevent using unstable data.")
+                        self._log(WARN, f"PID triggered or instability detected. Suppressing max_efficiency_seen update to prevent using unstable data.")
                     
                     # Calculate normalized efficiency SAFELY.
                     safe_max_seen = max(self.max_efficiency_seen, 1e-6)
@@ -1100,6 +1104,8 @@ class PowerManager(xAppBase):
                             self._log(WARN, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was wrong. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'RED')}")
                         else:
                             reward_for_bandit = 0.4 # Strong incentive
+                            if is_active_ue_present:
+                                reward_for_bandit = max(normalized_efficiency ** 2,0.4)
                             self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying strong incentive bonus. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
 
                     
