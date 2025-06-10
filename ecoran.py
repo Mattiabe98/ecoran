@@ -1022,19 +1022,19 @@ class PowerManager(xAppBase):
                     # --- ADAPTIVE NORMALIZATION & STATE CHANGE LOGIC ---
                     is_active_ue_present = (current_num_active_ues > 0)
                     
-                    # Reset max_efficiency when traffic resumes after an idle period
+                    # *** FIX: Reset max_efficiency when traffic resumes after an idle period ***
                     if is_active_ue_present and self.was_idle_in_previous_step:
                         self._log(INFO, f"Traffic resumed. Resetting max_efficiency_seen from {self.max_efficiency_seen:.3f}.")
-                        # DO NOT reset to a small number. Reset to zero, it will be updated by the first real value.
+                        # Reset to zero. The first valid measurement will correctly set the new max.
                         self.max_efficiency_seen = 0.0 
                     self.was_idle_in_previous_step = not is_active_ue_present
                     
+                    # Your existing decay and update logic
                     self.max_efficiency_seen *= self.max_eff_decay_factor
                     self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
                     
                     # Calculate normalized efficiency SAFELY.
-                    # Use a small epsilon to prevent division by zero or a tiny number.
-                    safe_max_seen = max(self.max_efficiency_seen, 1e-6)
+                    safe_max_seen = max(self.max_efficiency_seen, 1e-6) # Use a small epsilon
                     normalized_efficiency = current_raw_efficiency / safe_max_seen
                     # Clamp the result to a maximum of 1.0 to prevent explosions from weird data.
                     normalized_efficiency = min(normalized_efficiency, 1.0)
