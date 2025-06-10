@@ -135,17 +135,19 @@ class PowerManager(xAppBase):
             if "hold" not in self.arm_keys_ordered: self.arm_keys_ordered.append("hold")
         
         self.context_dimension_features_only = int(cb_config.get('context_dimension_features_only', 8)) 
-        
-        # LinTS specific parameters from config (with defaults)
-        self.lints_lambda_ = float(cb_config.get('lambda_', 1.0))  # Default from LinTS doc
-        self.lints_fit_intercept = bool(cb_config.get('fit_intercept', True))
-        self.lints_v_sq = float(cb_config.get('v_sq', 0.1)) # Recommended to decrease from 1.0, let's try 0.1
-        self.lints_sample_from = str(cb_config.get('sample_from', "coef"))
-        self.lints_method = str(cb_config.get('method', "chol"))
-        self.lints_beta_prior = cb_config.get('beta_prior', "auto") # Can be None, "auto", or specific tuple
-        self.lints_smoothing = cb_config.get('smoothing', None) # Can be None or tuple
-        lints_random_state_cfg = cb_config.get('random_state', None)
-        self.lints_random_state = int(lints_random_state_cfg) if lints_random_state_cfg is not None else None
+
+        self.workload_avg_window_size = int(cb_config.get('workload_avg_window_size', 3))
+        self.recent_workload_bits: List[float] = []
+        # # LinTS specific parameters from config (with defaults)
+        # self.lints_lambda_ = float(cb_config.get('lambda_', 1.0))  # Default from LinTS doc
+        # self.lints_fit_intercept = bool(cb_config.get('fit_intercept', True))
+        # self.lints_v_sq = float(cb_config.get('v_sq', 0.1)) # Recommended to decrease from 1.0, let's try 0.1
+        # self.lints_sample_from = str(cb_config.get('sample_from', "coef"))
+        # self.lints_method = str(cb_config.get('method', "chol"))
+        # self.lints_beta_prior = cb_config.get('beta_prior', "auto") # Can be None, "auto", or specific tuple
+        # self.lints_smoothing = cb_config.get('smoothing', None) # Can be None or tuple
+        # lints_random_state_cfg = cb_config.get('random_state', None)
+        # self.lints_random_state = int(lints_random_state_cfg) if lints_random_state_cfg is not None else None
 
         # Create LinTS Beta Prior
         
@@ -982,15 +984,36 @@ class PowerManager(xAppBase):
                     total_prb_ul_percentage = sum(d.get('ul_prb_sum_percentage', 0.0) for d in kpm_summed_data.values())
                     num_kpm_reports_processed = sum(d.get('reports_in_interval',0) for d in kpm_summed_data.values())
 
-                    significant_throughput_change = False
-                    if self.total_bits_from_previous_optimizer_interval is not None: 
-                        denominator = self.total_bits_from_previous_optimizer_interval
-                        if denominator < 1e-6: 
-                            if total_bits_optimizer_interval > 1e6 : significant_throughput_change = True 
-                        elif abs(total_bits_optimizer_interval - denominator) / denominator > self.throughput_change_threshold_for_discard:
-                            relative_change = abs(total_bits_optimizer_interval - denominator) / denominator
-                            self._log(WARN, f"Optimizer: Sig. throughput change ({relative_change*100:.1f}%). Update might be skipped.")
-                            significant_throughput_change = True
+                    reset_efficiency_baseline = False
+                    
+                    # Only perform the check if we have a full window of history to compare against
+                    if len(self.recent_workload_bits) >= self.workload_avg_window_size:
+                        # Calculate the moving average of the recent past
+                        historical_avg_bits = sum(self.recent_workload_bits) / len(self.recent_workload_bits)
+                        
+                        # Only consider it a potential drop if the historical average was significant
+                        if historical_avg_bits > 1e7: # e.g., > 10 Megabits on average per interval
+                            
+                            # Use a safe divisor
+                            safe_historical_avg = max(historical_avg_bits, 1.0)
+                            workload_ratio = total_bits_optimizer_interval / safe_historical_avg
+                            
+                            if workload_ratio < self.workload_drop_threshold:
+                                self._log(INFO, f"Workload drop detected (Current Bits: {total_bits_optimizer_interval/1e6:.1f}Mb "
+                                              f"< {self.workload_drop_threshold*100:.0f}% of historical avg: {historical_avg_bits/1e6:.1f}Mb). "
+                                              f"Resetting max_efficiency_seen.")
+                                reset_efficiency_baseline = True
+                    
+                    # --- Update the memory window ---
+                    self.recent_workload_bits.append(total_bits_optimizer_interval)
+                    if len(self.recent_workload_bits) > self.workload_avg_window_size:
+                        self.recent_workload_bits.pop(0)
+                    
+                    # --- Act on the flag ---
+                    if reset_efficiency_baseline:
+                        self.max_efficiency_seen = 0.0
+                        # Also clear the history so the baseline can be rebuilt from scratch after the drop
+                        self.recent_workload_bits.clear()
 
                     # Determine effective TDP for reward calculation (the one bandit was aiming for unless PID overrode)
                     # self.optimizer_target_tdp_w was set by the *previous* bandit action OR by PID.
@@ -1090,10 +1113,14 @@ class PowerManager(xAppBase):
                         # --- Now, apply a penalty if stressed AND action was wrong ---
                         if current_ru_cpu_usage_control_val > (self.target_ru_cpu_usage * 0.99):
                             if action_delta_w <= 0: # If we held or decreased TDP when stressed...
-                                penalty = 0.3 # A fixed penalty to apply
                                 self._log(WARN, f"CB REWARD MOD: Stressed CPU at {current_ru_cpu_usage_control_val:.2f}%. Applying penalty of {penalty} to efficiency reward.")
-                                reward_for_bandit -= penalty
-                        
+                                reward_for_bandit -= 0.3
+                        if (self.last_action_requested_tdp is not None and self.last_action_actual_tdp is not None and action_delta_w > 0 and abs(self.last_action_requested_tdp - self.last_action_actual_tdp) > 1e-3): # Check if the action was clipped
+                            # The requested action was outside the operational range. This is an ineffective choice.
+                            # We assign a moderate penalty to discourage this.
+                            reward_for_bandit =- 0.25 
+                            self._log(WARN, f"CB REWARD: Ineffective Action, -0.25 penalty added. Requested {self.last_action_requested_tdp:.1f}W but clipped to {self.last_action_actual_tdp:.1f}W. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'RED')}")
+                                            # Final clipping and setting the log variable
                         # Log the result
                         colored_max_seen = self._colorize(f'{self.max_efficiency_seen:.3f}', 'WHITE')
                         reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
@@ -1116,14 +1143,6 @@ class PowerManager(xAppBase):
                         reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
                         self._log(INFO, f"CB Reward (True Idle): Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
 
-
-                    if (self.last_action_requested_tdp is not None and self.last_action_actual_tdp is not None and action_delta_w > 0 and abs(self.last_action_requested_tdp - self.last_action_actual_tdp) > 1e-3): # Check if the action was clipped
-                        
-                        # The requested action was outside the operational range. This is an ineffective choice.
-                        # We assign a moderate penalty to discourage this.
-                        reward_for_bandit =- 0.25 
-                        self._log(WARN, f"CB REWARD: Ineffective Action, -0.25 penalty added. Requested {self.last_action_requested_tdp:.1f}W but clipped to {self.last_action_actual_tdp:.1f}W. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'RED')}")
-                                        # Final clipping and setting the log variable
                     reward_for_bandit = np.clip(reward_for_bandit, -1.0, 1.0)
                     self.most_recent_calculated_reward_for_log = reward_for_bandit
 
