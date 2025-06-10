@@ -58,7 +58,9 @@ contextual_bandit:
   actions_tdp_delta_w:
     "dec_10": -10.0
     "dec_5": -5.0
+    "dec_2": -2.0
     "hold": 0.0
+    "inc_2": 2.0
     "inc_5": 5.0
     "inc_10": 10.0
   context_dimension_features_only: 4 
