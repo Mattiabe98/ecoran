@@ -536,6 +536,7 @@ class PowerManager(xAppBase):
             with open(self.power_limit_uw_file, 'w') as f_write:
                 f_write.write(str(clamped_tdp_uw))
             self.current_tdp_w = new_tdp_w
+            return new_tdp_w, requested_tdp_w
         except OSError as e:
             self._log(ERROR, f"OSError writing TDP to {self.power_limit_uw_file}: {e}")
             raise RuntimeError(f"OSError setting TDP: {e}") 
@@ -543,7 +544,6 @@ class PowerManager(xAppBase):
             self._log(ERROR, f"Exception writing TDP: {e}")
             raise RuntimeError(f"Exception setting TDP: {e}")
 
-      
     def _run_ru_timing_pid_step(self, current_ru_cpu_usage: float):
         if not self.ru_timing_core_indices: return 
         
