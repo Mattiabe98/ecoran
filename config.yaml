@@ -61,7 +61,6 @@ contextual_bandit:
     "hold": 0.0
     "inc_5": 5.0
     "inc_10": 10.0
-  # ... other bandit params
   context_dimension_features_only: 4 
   lambda_: 1.0            # Regularization (default 1.0 for LinTS)
   fit_intercept: True
@@ -71,8 +70,11 @@ contextual_bandit:
   beta_prior: uniform_optimistic     # "auto", null (None in Python), or specific tuple e.g. [[0.5, 2], 2]
   smoothing: null        # null (None in Python) or tuple e.g. [1, 20]
   random_state: 42       # Integer for reproducibility, or null for random
-
-
+  normalization_parameters:
+    # NO 'bias' feature needed here if fit_intercept=true
+    cpu_headroom: {'min': -5.0, 'max': 20.0}
+    num_active_ues: {'min': 0.0, 'max': 5.0} # Set this to a reasonable max for your scenario
+    
 bootstrapped_ts:
   # The number of models to train. More models = more robust, but slightly slower.
   # 20 is a very reasonable number.
@@ -86,10 +88,6 @@ bootstrapped_ts:
   # idle_reward_scaling_factor: 1.0 # Used by 'closeness_with_bonus' if you keep that.
   # idle_decrease_action_bonus: 0.2 # Used by 'closeness_with_bonus'
   # increase_penalty_value: -1.0 # Used by 'closeness_with_bonus' for increase actions
-  normalization_parameters:
-    efficiency_reward: {'min': 0.0, 'max': 5.0} # We still need this for the reward, but not as a feature
-    cpu_headroom: {'min': -5.0, 'max': 20.0}
-    num_active_ues: {'min': 0.0, 'max': 5.0} # Set this to a reasonable max for your scenario
     
   idle_reward_logic:
     mode: "closeness_with_bonus" # Options: "closeness_with_bonus", "strong_min_focus", "original_penalty"
@@ -109,17 +107,6 @@ bootstrapped_ts:
   rule_idle_descent_step_w: 20         # How much to decrease TDP by
   rule_idle_descent_max_steps: 3       # Max number of rule steps before bandit takes over again
   
-  normalization_parameters:
-    # NO 'bias' feature needed here if fit_intercept=true
-    total_bits_dl_per_second: {'min': 0.0, 'max': 1.0e9} # Example: 1 Gbps
-    total_bits_ul_per_second: {'min': 0.0, 'max': 1.0e9} # Example: 1 Gbps
-    prb_total_dl_percentage: {'min': 0.0, 'max': 400.0} # Example: 4 DUs * 100%
-    prb_total_ul_percentage: {'min': 0.0, 'max': 400.0} # Example: 4 DUs * 100%
-    num_active_ues: {'min': 0.0, 'max': 5.0}
-    num_active_dus: {'min': 0.0, 'max': 4.0} # Set to actual number of DUs
-    ru_cpu_usage: {'min': 80.0, 'max': 100.0}
-    current_tdp: {'min': 90.0, 'max': 170.0} # Should match tdp_range
-
 # ------------------------------------------------------------------------------
 # Monitoring, Control Loop Timings & Logging
 # ------------------------------------------------------------------------------
