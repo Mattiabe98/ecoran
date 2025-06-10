@@ -1097,7 +1097,7 @@ class PowerManager(xAppBase):
                         action_delta_w = self.bandit_actions.get(chosen_arm_key, 0.0)
 
                     # HIERARCHY 1: PID Trigger
-                    if self.pid_triggered_since_last_decision:
+                    if pid_fired_this_interval:
                         self.pid_triggered_since_last_decision = False
                         if action_delta_w <= 0:
                             reward_for_bandit = -0.4
