@@ -1123,7 +1123,7 @@ class PowerManager(xAppBase):
                         # --- Now, apply a penalty if stressed AND action was wrong ---
                         if current_ru_cpu_usage_control_val > (self.target_ru_cpu_usage * 0.99):
                             if action_delta_w <= 0: # If we held or decreased TDP when stressed...
-                                self._log(WARN, f"CB REWARD MOD: Stressed CPU at {current_ru_cpu_usage_control_val:.2f}%. Applying penalty of {penalty} to efficiency reward.")
+                                self._log(WARN, f"CB REWARD MOD: Stressed CPU at {current_ru_cpu_usage_control_val:.2f}%. Applying penalty of -0.3 to efficiency reward.")
                                 reward_for_bandit -= 0.3
                         if (self.last_action_requested_tdp is not None and self.last_action_actual_tdp is not None and action_delta_w > 0 and abs(self.last_action_requested_tdp - self.last_action_actual_tdp) > 1e-3): # Check if the action was clipped
                             # The requested action was outside the operational range. This is an ineffective choice.
