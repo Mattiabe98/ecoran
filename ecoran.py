@@ -249,7 +249,7 @@ class PowerManager(xAppBase):
         """Ensure essential normalization parameters have defaults if not in config."""
         defaults = {
             'num_active_ues': {'min': 0, 'max': 100.0},
-            'cpu_headroom:' {'min': -5.0, 'max': 20.0}
+            'cpu_headroom': {'min': -5.0, 'max': 20.0}
         }
         for key, default_val in defaults.items():
             if key not in self.norm_params:
