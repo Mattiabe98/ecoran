@@ -1014,8 +1014,8 @@ class PowerManager(xAppBase):
                             self._log(INFO, f"Workload drop detected (ratio: {workload_ratio:.2f} < {self.workload_drop_threshold}). "
                                           f"Resetting max_efficiency_seen from {self.max_efficiency_seen:.3f} to 0.")
                             self.max_efficiency_seen = 0.0
-                            
-                    self.max_efficiency_seen *= self.max_eff_decay_factor
+                    # Decay pushes the agent to hold, disable it.
+                    # self.max_efficiency_seen *= self.max_eff_decay_factor 
                     # Ensure the new efficiency measurement can set the max if it's currently zero.
                     self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
                     
