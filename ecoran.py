@@ -127,6 +127,7 @@ class PowerManager(xAppBase):
         # --- Contextual Bandit ---
         cb_config = self.config.get('contextual_bandit', {})
         bandit_actions_w_str = cb_config.get('actions_tdp_delta_w', {"dec_10": -10.0, "dec_5": -5.0, "hold": 0.0, "inc_5": 5.0, "inc_10": 10.0})
+        self.workload_drop_threshold = float(cb_config.get('workload_drop_threshold_for_reset', 0.5))
         self.bandit_actions: Dict[str, float] = {k: float(v) for k, v in bandit_actions_w_str.items()}
         self.arm_keys_ordered = list(self.bandit_actions.keys()) 
         if "hold" not in self.bandit_actions:
@@ -1000,7 +1001,6 @@ class PowerManager(xAppBase):
                             relative_change = abs(total_bits_optimizer_interval - denominator) / denominator
                             self._log(WARN, f"Optimizer: Sig. throughput change ({relative_change*100:.1f}%). Update might be skipped.")
                             significant_throughput_change = True
-                    self.total_bits_from_previous_optimizer_interval = total_bits_optimizer_interval
 
                     # Determine effective TDP for reward calculation (the one bandit was aiming for unless PID overrode)
                     # self.optimizer_target_tdp_w was set by the *previous* bandit action OR by PID.
@@ -1021,25 +1021,29 @@ class PowerManager(xAppBase):
 
                     # --- ADAPTIVE NORMALIZATION & STATE CHANGE LOGIC ---
                     is_active_ue_present = (current_num_active_ues > 0)
+                    if (self.total_bits_from_previous_optimizer_interval is not None and
+                            self.total_bits_from_previous_optimizer_interval > 1e6): # Avoid triggering on idle fluctuations
                     
-                    # *** FIX: Reset max_efficiency when traffic resumes after an idle period ***
-                    if is_active_ue_present and self.was_idle_in_previous_step:
-                        self._log(INFO, f"Traffic resumed. Resetting max_efficiency_seen from {self.max_efficiency_seen:.3f}.")
-                        # Reset to zero. The first valid measurement will correctly set the new max.
-                        self.max_efficiency_seen = 0.0 
-                    self.was_idle_in_previous_step = not is_active_ue_present
-                    
-                    # Your existing decay and update logic
+                        # Calculate the ratio of current throughput to previous throughput.
+                        workload_ratio = total_bits_optimizer_interval / self.total_bits_from_previous_optimizer_interval
+                        
+                        if workload_ratio < self.workload_drop_threshold:
+                            self._log(INFO, f"Workload drop detected (ratio: {workload_ratio:.2f} < {self.workload_drop_threshold}). "
+                                          f"Resetting max_efficiency_seen from {self.max_efficiency_seen:.3f} to 0.")
+                            self.max_efficiency_seen = 0.0
+                            
                     self.max_efficiency_seen *= self.max_eff_decay_factor
+                    # Ensure the new efficiency measurement can set the max if it's currently zero.
                     self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
                     
                     # Calculate normalized efficiency SAFELY.
-                    safe_max_seen = max(self.max_efficiency_seen, 1e-6) # Use a small epsilon
+                    safe_max_seen = max(self.max_efficiency_seen, 1e-6)
                     normalized_efficiency = current_raw_efficiency / safe_max_seen
-                    # Clamp the result to a maximum of 1.0 to prevent explosions from weird data.
-                    normalized_efficiency = min(normalized_efficiency, 1.0)
-
-
+                    normalized_efficiency = min(normalized_efficiency, 1.0) # Clamp
+                    
+                    # Now update the throughput for the *next* interval's comparison
+                    self.total_bits_from_previous_optimizer_interval = total_bits_optimizer_interval
+                    
                     # --- CONTEXT VECTOR CREATION ---
                     current_actual_tdp_for_context = self.current_tdp_w
                     current_context_vec = self._get_current_context_vector(
