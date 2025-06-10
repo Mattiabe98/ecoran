@@ -970,8 +970,6 @@ class PowerManager(xAppBase):
                 if loop_start_time - self.last_optimizer_run_time >= self.optimizer_decision_interval_s:
                     # Refresh current_tdp_w again as PID might have acted
                     pid_fired_this_interval = self.pid_triggered_since_last_decision
-                    if pid_fired_this_interval:
-                        self.pid_triggered_since_last_decision = False
                     self.current_tdp_w = self._read_current_tdp_limit_w()
 
                     interval_energy_uj = self._get_interval_energy_uj_for_optimizer()
