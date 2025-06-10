@@ -227,7 +227,8 @@ class PowerManager(xAppBase):
 
         self.last_action_actual_tdp: Optional[float] = None
         self.last_action_requested_tdp: Optional[float] = None
-        
+
+        self.pid_triggered_since_last_decision = False
         self.COLORS = {
             'RED': '\033[91m',
             'GREEN': '\033[92m',
@@ -968,7 +969,9 @@ class PowerManager(xAppBase):
                 
                 if loop_start_time - self.last_optimizer_run_time >= self.optimizer_decision_interval_s:
                     # Refresh current_tdp_w again as PID might have acted
-                    was_pid_triggered_in_interval = False
+                    pid_fired_this_interval = self.pid_triggered_since_last_decision
+                    if pid_fired_this_interval:
+                        self.pid_triggered_since_last_decision = False
                     self.current_tdp_w = self._read_current_tdp_limit_w()
 
                     interval_energy_uj = self._get_interval_energy_uj_for_optimizer()
@@ -1057,7 +1060,11 @@ class PowerManager(xAppBase):
                     # Decay pushes the agent to hold, disable it.
                     # self.max_efficiency_seen *= self.max_eff_decay_factor 
                     # Ensure the new efficiency measurement can set the max if it's currently zero.
-                    self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
+                    if not pid_fired_this_interval:
+                        # Only trust efficiency values from stable intervals to set the new benchmark
+                        self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
+                    else:
+                        self._log(WARN, f"PID triggered. Suppressing max_efficiency_seen update to prevent using unstable data.")
                     
                     # Calculate normalized efficiency SAFELY.
                     safe_max_seen = max(self.max_efficiency_seen, 1e-6)
