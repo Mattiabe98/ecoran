@@ -1128,7 +1128,7 @@ class PowerManager(xAppBase):
                         if (self.last_action_requested_tdp is not None and self.last_action_actual_tdp is not None and action_delta_w > 0 and abs(self.last_action_requested_tdp - self.last_action_actual_tdp) > 1e-3): # Check if the action was clipped
                             # The requested action was outside the operational range. This is an ineffective choice.
                             # We assign a moderate penalty to discourage this.
-                            reward_for_bandit =- 0.25 
+                            reward_for_bandit -= 0.25 
                             self._log(WARN, f"CB REWARD: Ineffective Action, -0.25 penalty added. Requested {self.last_action_requested_tdp:.1f}W but clipped to {self.last_action_actual_tdp:.1f}W. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'RED')}")
                                             # Final clipping and setting the log variable
                         # Log the result
