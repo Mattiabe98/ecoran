@@ -984,6 +984,16 @@ class PowerManager(xAppBase):
                     total_prb_ul_percentage = sum(d.get('ul_prb_sum_percentage', 0.0) for d in kpm_summed_data.values())
                     num_kpm_reports_processed = sum(d.get('reports_in_interval',0) for d in kpm_summed_data.values())
 
+                    significant_throughput_change = False
+                    if self.total_bits_from_previous_optimizer_interval is not None: 
+                        denominator = self.total_bits_from_previous_optimizer_interval
+                        if denominator < 1e-6: 
+                            if total_bits_optimizer_interval > 1e6 : significant_throughput_change = True 
+                        elif abs(total_bits_optimizer_interval - denominator) / denominator > self.throughput_change_threshold_for_discard:
+                            relative_change = abs(total_bits_optimizer_interval - denominator) / denominator
+                            self._log(WARN, f"Optimizer: Sig. throughput change ({relative_change*100:.1f}%). Update might be skipped.")
+                            significant_throughput_change = True
+                    
                     reset_efficiency_baseline = False
                     
                     # Only perform the check if we have a full window of history to compare against
