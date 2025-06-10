@@ -223,6 +223,9 @@ class PowerManager(xAppBase):
         self.max_efficiency_seen = 1e-9
         self.max_eff_decay_factor = 0.995 # Add this new parameter
 
+        self.last_action_actual_tdp: Optional[float] = None
+        self.last_action_requested_tdp: Optional[float] = None
+        
         self.COLORS = {
             'RED': '\033[91m',
             'GREEN': '\033[92m',
@@ -504,6 +507,7 @@ class PowerManager(xAppBase):
             return float(self.tdp_min_w)
 
     def _set_tdp_limit_w(self, tdp_watts: float, context: str = ""):
+        requested_tdp_w = tdp_watts
         clamped_tdp_uw = int(max(self.tdp_min_w * 1e6, min(tdp_watts * 1e6, self.tdp_max_w * 1e6)))
         new_tdp_w = clamped_tdp_uw / 1e6
         significant_change = abs(self.current_tdp_w - new_tdp_w) > 0.01
@@ -512,7 +516,7 @@ class PowerManager(xAppBase):
             if significant_change:
                 self._log(INFO, f"[DRY RUN] {context}. New Target TDP: {new_tdp_w:.1f}W (Previous: {self.current_tdp_w:.1f}W).")
             self.current_tdp_w = new_tdp_w # Update internal state even in dry run
-            return
+            return new_tdp_w, requested_tdp_w
 
         try:
             with open(self.power_limit_uw_file, 'r') as f_read:
@@ -521,7 +525,7 @@ class PowerManager(xAppBase):
                 if significant_change: # Only log if it's a logical change even if HW is same
                     self._log(INFO, f"{context}. Target TDP: {new_tdp_w:.1f}W (already set in HW, updating internal state).")
                 self.current_tdp_w = new_tdp_w # Update internal state
-                return 
+                return new_tdp_w, requested_tdp_w
         except Exception as e:
             self._log(WARN, f"Could not read {self.power_limit_uw_file} before write: {e}. Proceeding with write.")
 
@@ -692,9 +696,12 @@ class PowerManager(xAppBase):
         if current_context_vector is not None:
              self._log(DEBUG_ALL, f"CB Lib Context (used for decision): {['{:.2f}'.format(x) for x in current_context_vector]}")
 
-        self._set_tdp_limit_w(proposed_next_tdp_by_bandit, context=f"Optimizer CB Lib (Arm: {actual_selected_arm_key_from_idx})")
+        actual_set_tdp, requested_tdp = self._set_tdp_limit_w(proposed_next_tdp_by_bandit, context=f"Optimizer CB Lib (Arm: {actual_selected_arm_key_from_idx})")
+        self.optimizer_target_tdp_w = actual_set_tdp
         self.optimizer_target_tdp_w = self._read_current_tdp_limit_w() # Update target to what was actually set
 
+        self.last_action_actual_tdp = actual_set_tdp
+        self.last_action_requested_tdp = requested_tdp
 
     def _get_pkg_power_w(self) -> Tuple[float, bool]:
         if not os.path.exists(self.energy_uj_file): return 0.0, False
@@ -1057,6 +1064,7 @@ class PowerManager(xAppBase):
                             reward_for_bandit = 0.4 # Strong incentive
                             self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying strong incentive bonus. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
 
+                    
                     # # HIERARCHY 2: Stressed State
                     # elif current_ru_cpu_usage_control_val > (self.target_ru_cpu_usage * 0.99):
                     #     if action_delta_w > 0:
@@ -1108,7 +1116,14 @@ class PowerManager(xAppBase):
                         reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
                         self._log(INFO, f"CB Reward (True Idle): Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
 
-                    # Final clipping and setting the log variable
+
+                    if (self.last_action_requested_tdp is not None and self.last_action_actual_tdp is not None and abs(self.last_action_requested_tdp - self.last_action_actual_tdp) > 1e-3): # Check if the action was clipped
+                        
+                        # The requested action was outside the operational range. This is an ineffective choice.
+                        # We assign a moderate penalty to discourage this.
+                        reward_for_bandit = -0.25 
+                        self._log(WARN, f"CB REWARD: Ineffective Action. Requested {self.last_action_requested_tdp:.1f}W but clipped to {self.last_action_actual_tdp:.1f}W. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'RED')}")
+                                        # Final clipping and setting the log variable
                     reward_for_bandit = np.clip(reward_for_bandit, -1.0, 1.0)
                     self.most_recent_calculated_reward_for_log = reward_for_bandit
 
