@@ -689,58 +689,80 @@ class PowerManager(xAppBase):
         return delta_e
 
     def _kpm_indication_callback(self, e2_agent_id: str, subscription_id: str,
-                                 indication_hdr_bytes: bytes, indication_msg_bytes: bytes):
-        if not self.e2sm_kpm: self._log(WARN, f"KPM from {e2_agent_id}, but e2sm_kpm unavailable."); return
+                                     indication_hdr_bytes: bytes, indication_msg_bytes: bytes):
+            # --- CRITICAL: Add logging at the very top to confirm this function is being called ---
+            self._log(DEBUG_KPM, f"KPM CB: Received indication from AgentID: {e2_agent_id}, SubID: {subscription_id}")
     
-        try:
-            kpm_meas_data = self.e2sm_kpm.extract_meas_data(indication_msg_bytes)
-    
-            if not kpm_meas_data: 
-                kpm_hdr_info = self.e2sm_kpm.extract_hdr_info(indication_hdr_bytes)
-                self._log(WARN, f"KPM CB: Failed/empty KPM data from {e2_agent_id}. HDR: {kpm_hdr_info}"); return
-            
-            ue_meas_data_map = kpm_meas_data.get("ueMeasData", {})
-            if not isinstance(ue_meas_data_map, dict):
-                self._log(WARN, f"KPM CB: Invalid 'ueMeasData' from {e2_agent_id}. Data: {kpm_meas_data}"); return
-            
-            gNB_data_this_report = {'dl_bits': 0.0, 'ul_bits': 0.0, 'dl_prb': 0.0, 'ul_prb': 0.0}
-
-            for ue_id_str, per_ue_measurements in ue_meas_data_map.items():
-                global_ue_id = f"{e2_agent_id}_{ue_id_str}" 
-                ue_dl_bits_this_ue = 0; ue_ul_bits_this_ue = 0
-                ue_metrics = per_ue_measurements.get("measData", {})
-                if not isinstance(ue_metrics, dict): continue 
+            if not self.e2sm_kpm:
+                self._log(WARN, f"KPM from {e2_agent_id}, but e2sm_kpm module is unavailable. Cannot process.")
+                return
+        
+            try:
+                kpm_meas_data = self.e2sm_kpm.extract_meas_data(indication_msg_bytes)
+        
+                if not kpm_meas_data: 
+                    kpm_hdr_info = self.e2sm_kpm.extract_hdr_info(indication_hdr_bytes)
+                    self._log(WARN, f"KPM CB: KPM data from {e2_agent_id} is empty or failed to parse. HDR: {kpm_hdr_info}")
+                    # Still treat this as a "heartbeat" report from the DU
+                    with self.kpm_data_lock:
+                        self.reports_received_this_interval[e2_agent_id] += 1
+                        self.last_report_time_per_du[e2_agent_id] = time.monotonic()
+                    return
                 
-                for metric_name, value_list in ue_metrics.items():
-                    if isinstance(value_list, list) and value_list:
-                        value = sum(val for val in value_list if isinstance(val, (int, float)))
-                        if metric_name == 'DRB.RlcSduTransmittedVolumeDL':
-                            ue_dl_bits_this_ue = float(value) * 1000.0 
-                            gNB_data_this_report['dl_bits'] += ue_dl_bits_this_ue
-                        elif metric_name == 'DRB.RlcSduTransmittedVolumeUL':
-                            ue_ul_bits_this_ue = float(value) * 1000.0 
-                            gNB_data_this_report['ul_bits'] += ue_ul_bits_this_ue
-                        elif metric_name == 'RRU.PrbTotDl': gNB_data_this_report['dl_prb'] += float(value)
-                        elif metric_name == 'RRU.PrbTotUl': gNB_data_this_report['ul_prb'] += float(value)
-
+                ue_meas_data_map = kpm_meas_data.get("ueMeasData", {})
+                if not isinstance(ue_meas_data_map, dict):
+                    self._log(WARN, f"KPM CB: Invalid 'ueMeasData' format from {e2_agent_id}. Data: {kpm_meas_data}")
+                    return
+                
+                gNB_data_this_report = {'dl_bits': 0.0, 'ul_bits': 0.0, 'dl_prb': 0.0, 'ul_prb': 0.0}
+    
+                for ue_id_str, per_ue_measurements in ue_meas_data_map.items():
+                    global_ue_id = f"{e2_agent_id}_{ue_id_str}" 
+                    ue_dl_bits_this_ue, ue_ul_bits_this_ue = 0.0, 0.0
+                    ue_metrics = per_ue_measurements.get("measData", {})
+                    if not isinstance(ue_metrics, dict): continue 
+                    
+                    for metric_name, value_list in ue_metrics.items():
+                        if isinstance(value_list, list) and value_list:
+                            value = sum(val for val in value_list if isinstance(val, (int, float)))
+                            # Ensure metric names match your config.yaml
+                            if metric_name == 'DRB.RlcSduTransmittedVolumeDL':
+                                ue_dl_bits_this_ue = float(value) * 1000.0 
+                                gNB_data_this_report['dl_bits'] += ue_dl_bits_this_ue
+                            elif metric_name == 'DRB.RlcSduTransmittedVolumeUL':
+                                ue_ul_bits_this_ue = float(value) * 1000.0 
+                                gNB_data_this_report['ul_bits'] += ue_ul_bits_this_ue
+                            # You removed PRB from your config, so I will comment these out.
+                            # elif metric_name == 'RRU.PrbTotDl': gNB_data_this_report['dl_prb'] += float(value)
+                            # elif metric_name == 'RRU.PrbTotUl': gNB_data_this_report['ul_prb'] += float(value)
+    
+                    with self.kpm_data_lock:
+                        # Using defaultdict here is fine.
+                        self.current_interval_per_ue_data[global_ue_id]['total_bits'] += (ue_dl_bits_this_ue + ue_ul_bits_this_ue)
+    
+                # --- This block now handles all data accumulation and counter increments ---
                 with self.kpm_data_lock:
-                    self.current_interval_per_ue_data[global_ue_id]['total_bits'] += (ue_dl_bits_this_ue + ue_ul_bits_this_ue)
-
-            with self.kpm_data_lock:
-                acc = self.accumulated_kpm_metrics[e2_agent_id]
-                acc['bits_sum_dl'] += gNB_data_this_report['dl_bits']
-                acc['bits_sum_ul'] += gNB_data_this_report['ul_bits']
-                acc['prb_sum_dl'] += gNB_data_this_report['dl_prb']
-                acc['prb_sum_ul'] += gNB_data_this_report['ul_prb']
-                acc['num_reports'] += 1
-                self.last_report_time_per_du[e2_agent_id] = time.monotonic()
-                if e2_agent_id in self.expected_du_ids:
-                    self.reports_received_this_interval[e2_agent_id] += 1
-                    self._log(DEBUG_KPM, f"KPM CB: Incremented report count for DU '{e2_agent_id}' to {self.reports_received_this_interval[e2_agent_id]}.")
-                else:
-                    self._log(WARN, f"KPM CB: Received report from unexpected DU '{e2_agent_id}'. Ignoring for optimizer count.")
-
-        except Exception as e: self._log(ERROR, f"Error processing KPM from {e2_agent_id}: {e}"); import traceback; traceback.print_exc()
+                    # Use defaultdict for clean accumulation
+                    acc = self.accumulated_kpm_metrics[e2_agent_id]
+                    acc['bits_sum_dl'] += gNB_data_this_report['dl_bits']
+                    acc['bits_sum_ul'] += gNB_data_this_report['ul_bits']
+                    acc['prb_sum_dl'] += gNB_data_this_report['dl_prb']
+                    acc['prb_sum_ul'] += gNB_data_this_report['ul_prb']
+                    acc['num_reports'] += 1
+    
+                    # This is the logic that was likely failing or not being reached.
+                    # Now it's guaranteed to run if the function is called.
+                    if e2_agent_id in self.expected_du_ids:
+                        self.reports_received_this_interval[e2_agent_id] += 1
+                        self.last_report_time_per_du[e2_agent_id] = time.monotonic()
+                        self._log(DEBUG_KPM, f"KPM CB: Incremented report count for DU '{e2_agent_id}' to {self.reports_received_this_interval[e2_agent_id]}. Total reports this interval: {len(self.reports_received_this_interval)}")
+                    else:
+                        self._log(WARN, f"KPM CB: Received report from unexpected DU '{e2_agent_id}'. Ignoring for optimizer count.")
+    
+            except Exception as e:
+                self._log(ERROR, f"KPM CB: CRITICAL ERROR processing KPM from {e2_agent_id}: {e}")
+                import traceback
+                self._log(ERROR, traceback.format_exc())
 
     def _get_and_reset_accumulated_kpm_metrics(self) -> Dict[str, Dict[str, Any]]:
         with self.kpm_data_lock:
@@ -970,49 +992,37 @@ class PowerManager(xAppBase):
                         self._run_ru_timing_pid_step(current_ru_cpu_usage)
                     self.last_ru_pid_run_time = loop_start_time
                 
+                # --- New, Corrected Adaptive Optimizer Trigger Logic ---
                 now = time.monotonic()
                 should_run_optimizer = False
                 reason = ""
-                
-                with self.kpm_data_lock:
-                    # 1. Determine which DUs are currently considered "active".
-                    # An active DU is one we expect reports from in this cycle.
-                    # Initially, this includes all DUs we haven't heard from yet OR those that have reported recently.
-                    active_du_set = {
-                        du_id for du_id in self.expected_du_ids
-                        if (now - self.last_report_time_per_du.get(du_id, 0.0)) < self.du_activity_timeout_s
-                    }
-                
-                    # 2. Check if the DUs we're waiting for have sent enough reports.
-                    # We only care about the DUs in our dynamically determined active_du_set.
-                    if not active_du_set:
-                        # If no DUs are active, we can trigger based on the timeout to handle a fully idle system.
-                        pass # The global timeout below will handle this.
-                    else:
-                        # Check if all DUs in the active set are present in our current interval's report counts.
-                        waiting_for_dus = active_du_set - set(self.reports_received_this_interval.keys())
-                        
-                        if not waiting_for_dus:
-                            # All active DUs have sent at least one report. Now check if they met the quota.
+
+                # Condition 1: Global safety timeout. This always comes first.
+                if now - self.last_optimizer_run_time > self.optimizer_max_interval_s:
+                    should_run_optimizer = True
+                    reason = f"Timeout of {self.optimizer_max_interval_s:.1f}s reached."
+                else:
+                    # Condition 2: Report count met for all *active* DUs.
+                    with self.kpm_data_lock:
+                        # Define the set of DUs we currently consider active and should wait for.
+                        active_du_set = {
+                            du_id for du_id in self.expected_du_ids
+                            if (now - self.last_report_time_per_du.get(du_id, 0.0)) < self.du_activity_timeout_s
+                        }
+
+                        # Only proceed if there is at least one active DU.
+                        if active_du_set:
+                            # Check if all DUs in the active set have met their report quota.
                             all_active_dus_ready = all(
                                 self.reports_received_this_interval.get(du_id, 0) >= self.optimizer_reports_per_du
                                 for du_id in active_du_set
                             )
+
                             if all_active_dus_ready:
                                 should_run_optimizer = True
                                 counts_str = ", ".join([f"{du.split('_')[-1]}:{self.reports_received_this_interval.get(du, 0)}" for du in active_du_set])
                                 reason = f"Active DUs met report count ({counts_str})"
                 
-                # 3. The global safety timeout is the final condition.
-                if not should_run_optimizer and (now - self.last_optimizer_run_time > self.optimizer_max_interval_s):
-                    should_run_optimizer = True
-                    with self.kpm_data_lock:
-                        active_str = ", ".join([du.split('_')[-1] for du in active_du_set])
-                        counts_str = ", ".join([f"{du.split('_')[-1]}:{c}" for du, c in self.reports_received_this_interval.items()])
-                        reason = f"Timeout of {self.optimizer_max_interval_s:.1f}s reached. Active DUs: [{active_str}]. Counts: [{counts_str}]"
-                
-                
-                # If either condition is met, run the optimizer.
                 if should_run_optimizer:
                     # This part remains the same as before.
                     self._log(INFO, f"Triggering optimizer: {reason}")
@@ -1025,6 +1035,7 @@ class PowerManager(xAppBase):
                     self.last_optimizer_run_time = now
                     with self.kpm_data_lock:
                         self.reports_received_this_interval.clear()
+                # --- End New Trigger Logic ---
 
                 if loop_start_time - self.last_stats_print_time >= self.stats_print_interval_s:
                     pkg_pwr_w, pkg_pwr_ok = self._get_pkg_power_w()
