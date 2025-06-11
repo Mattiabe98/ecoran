@@ -103,7 +103,8 @@ kpm_subscriptions:
   style4_metrics_per_ue:
     - "DRB.RlcSduTransmittedVolumeDL"
     - "DRB.RlcSduTransmittedVolumeUL"
-  
+    - "RRU.PrbTotDl"  # <-- ADD THIS BACK
+    - "RRU.PrbTotUl"  # <-- ADD THIS BACK
   # How often the gNB should generate and send a KPM report.
   style4_report_period_ms: 1000
   # The time window over which the gNB should aggregate data for a single report.
