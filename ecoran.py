@@ -696,6 +696,7 @@ class PowerManager(xAppBase):
             if not self.e2sm_kpm:
                 self._log(WARN, f"KPM from {e2_agent_id}, but e2sm_kpm module is unavailable. Cannot process.")
                 return
+        
             try:
                 # --- START: NEW DEBUGGING BLOCK ---
                 # Let's see the raw data before we try to parse it.
@@ -706,8 +707,6 @@ class PowerManager(xAppBase):
                     self._log(DEBUG_ALL, f"KPM PAYLOAD from {e2_agent_id}: {json.dumps(raw_meas_data_for_log)}")
                 except Exception as e_log:
                     self._log(WARN, f"Could not log raw KPM payload: {e_log}")
-                # --- END: NEW DEBUGGING BLOCK ---
-            try:
                 kpm_meas_data = self.e2sm_kpm.extract_meas_data(indication_msg_bytes)
         
                 if not kpm_meas_data: 
