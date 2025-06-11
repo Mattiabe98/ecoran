@@ -1061,13 +1061,13 @@ class PowerManager(xAppBase):
 
                     # Update maximum efficiency seen only if the result happened in a stable state
                     is_cpu_stressed = current_ru_cpu_usage_control_val > (self.target_ru_cpu_usage * 0.99)
-                    is_interval_unstable = pid_fired_this_interval or is_cpu_stressed
-                    if not is_interval_unstable:
-                        # Only trust efficiency values from stable intervals to set the new benchmark
-                        self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
+                    if pid_fired_this_interval:
+                        self._log(WARN, f"Instability detected: PID Safety Net was triggered this interval. Suppressing max_efficiency_seen update.")
+                    elif is_cpu_stressed:
+                        self._log(WARN, f"Instability detected: CPU is stressed ({current_ru_cpu_usage_control_val:.2f}% > {self.target_ru_cpu_usage * 0.99:.2f}%). Suppressing max_efficiency_seen update.")
                     else:
-                        self._log(WARN, f"PID triggered or instability detected. Suppressing max_efficiency_seen update to prevent using unstable data.")
-                    
+                        # This 'else' block means the interval was stable
+                        self.max_efficiency_seen = max(self.max_efficiency_seen, current_raw_efficiency)
                     # Calculate normalized efficiency SAFELY.
                     safe_max_seen = max(self.max_efficiency_seen, 1e-6)
                     normalized_efficiency = current_raw_efficiency / safe_max_seen
