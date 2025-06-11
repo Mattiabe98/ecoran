@@ -218,11 +218,14 @@ class PowerManager(xAppBase):
         self.reports_received_this_interval: Dict[str, int] = collections.defaultdict(int)
         self._log(INFO, f"Expecting KPM reports from {self.num_expected_dus} DUs: {self.expected_du_ids}")
         self._log(INFO, f"Optimizer will trigger after {self.optimizer_reports_per_du} reports from each DU or after {self.optimizer_max_interval_s}s timeout.")
-
+        self.du_activity_timeout_s = float(kpm_config.get('du_activity_timeout_s', 5.0))
+        self._log(INFO, f"A DU will be considered idle if no report is received for {self.du_activity_timeout_s}s.")
+        
         self.baseline_window_size = int(self.config.get('contextual_bandit', {}).get('baseline_window_size', 50))
         self.baseline_percentile = float(self.config.get('contextual_bandit', {}).get('baseline_percentile', 90.0))
         self.min_baseline_samples = int(self.config.get('contextual_bandit', {}).get('min_baseline_samples', 10))
         self.stable_efficiency_history = collections.deque(maxlen=self.baseline_window_size)
+        self.last_report_time_per_du: Dict[str, float] = {}
         
     def _colorize(self, text: str, color: str) -> str:
         """Wraps text in ANSI color codes for terminal output."""
@@ -730,7 +733,7 @@ class PowerManager(xAppBase):
                 acc['prb_sum_dl'] += gNB_data_this_report['dl_prb']
                 acc['prb_sum_ul'] += gNB_data_this_report['ul_prb']
                 acc['num_reports'] += 1
-
+                self.last_report_time_per_du[e2_agent_id] = time.monotonic()
                 if e2_agent_id in self.expected_du_ids:
                     self.reports_received_this_interval[e2_agent_id] += 1
                     self._log(DEBUG_KPM, f"KPM CB: Incremented report count for DU '{e2_agent_id}' to {self.reports_received_this_interval[e2_agent_id]}.")
@@ -967,34 +970,61 @@ class PowerManager(xAppBase):
                         self._run_ru_timing_pid_step(current_ru_cpu_usage)
                     self.last_ru_pid_run_time = loop_start_time
                 
-                # --- New Optimizer Trigger Logic ---
+                now = time.monotonic()
                 should_run_optimizer = False
                 reason = ""
-                with self.kpm_data_lock:
-                    if self.num_expected_dus > 0 and len(self.reports_received_this_interval) == self.num_expected_dus:
-                        if all(c >= self.optimizer_reports_per_du for c in self.reports_received_this_interval.values()):
-                            should_run_optimizer = True
-                            counts_str = ", ".join([f"{du.split('_')[-1]}:{c}" for du,c in self.reports_received_this_interval.items()])
-                            reason = f"All DUs met report count ({counts_str})"
                 
-                if not should_run_optimizer and (loop_start_time - self.last_optimizer_run_time > self.optimizer_max_interval_s):
+                with self.kpm_data_lock:
+                    # 1. Determine which DUs are currently considered "active".
+                    # An active DU is one we expect reports from in this cycle.
+                    # Initially, this includes all DUs we haven't heard from yet OR those that have reported recently.
+                    active_du_set = {
+                        du_id for du_id in self.expected_du_ids
+                        if (now - self.last_report_time_per_du.get(du_id, 0.0)) < self.du_activity_timeout_s
+                    }
+                
+                    # 2. Check if the DUs we're waiting for have sent enough reports.
+                    # We only care about the DUs in our dynamically determined active_du_set.
+                    if not active_du_set:
+                        # If no DUs are active, we can trigger based on the timeout to handle a fully idle system.
+                        pass # The global timeout below will handle this.
+                    else:
+                        # Check if all DUs in the active set are present in our current interval's report counts.
+                        waiting_for_dus = active_du_set - set(self.reports_received_this_interval.keys())
+                        
+                        if not waiting_for_dus:
+                            # All active DUs have sent at least one report. Now check if they met the quota.
+                            all_active_dus_ready = all(
+                                self.reports_received_this_interval.get(du_id, 0) >= self.optimizer_reports_per_du
+                                for du_id in active_du_set
+                            )
+                            if all_active_dus_ready:
+                                should_run_optimizer = True
+                                counts_str = ", ".join([f"{du.split('_')[-1]}:{self.reports_received_this_interval.get(du, 0)}" for du in active_du_set])
+                                reason = f"Active DUs met report count ({counts_str})"
+                
+                # 3. The global safety timeout is the final condition.
+                if not should_run_optimizer and (now - self.last_optimizer_run_time > self.optimizer_max_interval_s):
                     should_run_optimizer = True
                     with self.kpm_data_lock:
-                        counts_str = ", ".join([f"{du.split('_')[-1]}:{c}" for du,c in self.reports_received_this_interval.items()])
-                        reason = f"Timeout of {self.optimizer_max_interval_s:.1f}s reached. Counts: [{counts_str}]"
+                        active_str = ", ".join([du.split('_')[-1] for du in active_du_set])
+                        counts_str = ", ".join([f"{du.split('_')[-1]}:{c}" for du, c in self.reports_received_this_interval.items()])
+                        reason = f"Timeout of {self.optimizer_max_interval_s:.1f}s reached. Active DUs: [{active_str}]. Counts: [{counts_str}]"
                 
+                
+                # If either condition is met, run the optimizer.
                 if should_run_optimizer:
+                    # This part remains the same as before.
                     self._log(INFO, f"Triggering optimizer: {reason}")
-                    actual_interval_s = loop_start_time - self.last_optimizer_run_time
+                    actual_interval_s = now - self.last_optimizer_run_time
                     if actual_interval_s < 0.1:
                         self._log(WARN, f"Optimizer triggered with very short duration ({actual_interval_s:.3f}s). Skipping cycle.")
                     else:
                         self._perform_optimizer_cycle(actual_interval_s)
                     
-                    self.last_optimizer_run_time = loop_start_time
+                    self.last_optimizer_run_time = now
                     with self.kpm_data_lock:
                         self.reports_received_this_interval.clear()
-                # --- End New Trigger Logic ---
 
                 if loop_start_time - self.last_stats_print_time >= self.stats_print_interval_s:
                     pkg_pwr_w, pkg_pwr_ok = self._get_pkg_power_w()
