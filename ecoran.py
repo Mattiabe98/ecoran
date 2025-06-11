@@ -1188,9 +1188,11 @@ class PowerManager(xAppBase):
                             self._log(WARN, f"CB REWARD: Ineffective Action, -0.25 penalty added. Requested {self.last_action_requested_tdp:.1f}W but clipped to {self.last_action_actual_tdp:.1f}W. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'RED')}")
                                             # Final clipping and setting the log variable
                         # Log the result
-                        colored_max_seen = self._colorize(f'{self.max_efficiency_seen:.3f}', 'WHITE')
-                        reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
-                        self._log(INFO, f"CB Reward (Active): RawEff={current_raw_efficiency:.3f} b/uJ, NormEff={current_normalized_efficiency:.3f}, MaxSeen={colored_max_seen}. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
+                        if self.stable_efficiency_history:  # This check prevents the ValueError
+                            max_efficiency_seen = max(self.stable_efficiency_history)
+                            colored_max_seen = self._colorize(f'{self.max_efficiency_seen:.3f}', 'WHITE')
+                            reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
+                            self._log(INFO, f"CB Reward (Active): RawEff={current_raw_efficiency:.3f} b/uJ, NormEff={current_normalized_efficiency:.3f}, MaxSeen={colored_max_seen}. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
                     else: # TRUE IDLE: Not stressed and no UEs
                         holding_zone_width_w = 5.0
                         if tdp_for_reward_eval <= (self.tdp_min_w + holding_zone_width_w):
