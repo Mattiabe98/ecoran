@@ -1219,6 +1219,9 @@ class PowerManager(xAppBase):
                     self._run_contextual_bandit_optimizer_step(reward_for_bandit, current_context_vec, significant_throughput_change)
                     if not pid_fired_this_interval and not is_cpu_stressed:
                         self.stable_efficiency_history.append(current_raw_efficiency)
+                    self.last_raw_efficiency = current_raw_efficiency
+                    self.last_normalized_efficiency = current_normalized_efficiency
+                    self.total_bits_from_previous_optimizer_interval = total_bits_optimizer_interval
                     self.last_optimizer_run_time = loop_start_time
                 
                 if loop_start_time - self.last_stats_print_time >= self.stats_print_interval_s:
