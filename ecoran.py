@@ -1136,7 +1136,7 @@ class PowerManager(xAppBase):
                             
                             reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
                             colored_reward = self._colorize(f'{reward_for_bandit:+.3f}', reward_color)
-                            self._log(INFO, f"CB Reward (Active->Active): NormEff change: {self.last_normalized_efficiency:.2f} -> {current_normalized_efficiency:.2f}. Reward: {colored_reward}")
+                            self._log(INFO, f"CB Reward (Active->Active): NormEff change: {previous_normalized_efficiency:.2f} -> {current_normalized_efficiency:.2f}. Reward: {colored_reward}")
                     
                         else:
                             # REGIME 2: IDLE-to-ACTIVE Transition
