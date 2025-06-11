@@ -1167,7 +1167,7 @@ class PowerManager(xAppBase):
                             # [*] REWARD IS THE DELTA OF NORMALIZED EFFICIENCIES.
                             # This correctly captures relative improvement.
                             normalized_efficiency_delta = current_normalized_efficiency - self.last_normalized_efficiency
-                            reward_for_bandit = normalized_efficiency_delta
+                            reward_for_bandit = np.sign(normalized_efficiency_delta) * np.sqrt(abs(normalized_efficiency_delta))
                             
                             reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
                             colored_reward = self._colorize(f'{reward_for_bandit:+.3f}', reward_color)
