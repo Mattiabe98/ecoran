@@ -1158,7 +1158,7 @@ class PowerManager(xAppBase):
                         # Log the result
                         if self.stable_efficiency_history:  # This check prevents the ValueError
                             max_efficiency_seen = max(self.stable_efficiency_history)
-                            colored_max_seen = self._colorize(f'{self.max_efficiency_seen:.3f}', 'WHITE')
+                            colored_max_seen = self._colorize(f'{max_efficiency_seen:.3f}', 'WHITE')
                             reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
                             self._log(INFO, f"CB Reward (Active): RawEff={current_raw_efficiency:.3f} b/uJ, NormEff={current_normalized_efficiency:.3f}, MaxSeen={colored_max_seen}. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
                     else: # TRUE IDLE: Not stressed and no UEs
