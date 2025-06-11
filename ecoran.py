@@ -1069,7 +1069,7 @@ class PowerManager(xAppBase):
                         dynamic_baseline = np.mean(self.stable_efficiency_history)
                     
                     # 2. Create the normalized efficiency feature FOR THE CONTEXT VECTOR.
-                    context_normalized_efficiency = np.clip(current_raw_efficiency / max(dynamic_baseline, 1e-9), 0.0, 1.0)
+                    current_normalized_efficiency = np.clip(current_raw_efficiency / max(dynamic_baseline, 1e-9), 0.0, 1.0)
                     
                     # --- ADAPTIVE NORMALIZATION & STATE CHANGE LOGIC ---
                     is_active_ue_present = (current_num_active_ues > 0)
@@ -1111,7 +1111,7 @@ class PowerManager(xAppBase):
                         current_ru_cpu_usage_control_val,
                         current_actual_tdp_for_context,
                         # Pass the pre-calculated normalized efficiency
-                        context_normalized_efficiency 
+                        current_normalized_efficiency 
                     )
 
 
