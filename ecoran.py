@@ -14,6 +14,7 @@ import random
 import math
 import numpy as np
 import json
+import collections
 
 # Attempt to import contextualbandits library
 try:
