@@ -1,60 +1,130 @@
 # ==============================================================================
-# Power Manager Application Configuration File
+# EcoRAN Power Manager xApp - Configuration File
 # ==============================================================================
 
+# ------------------------------------------------------------------------------
+# Logging & General Settings
+# ------------------------------------------------------------------------------
 # Logging verbosity for console output: 0 (silent), 1 (errors), 2 (warnings), 3 (info), 4 (debug_kpm), 5 (debug_all)
 console_verbosity_level: 3
-# Logging verbosity for file output:
-file_verbosity_level: 3
-# Example: log more to file
+file_verbosity_level: 4 # Log more details to the file by default
 log_file_path: "/mnt/data/ecoran/" # Ensure this path is writable
 
+# Path to the configuration file for the underlying xAppBase library.
+# The xApp will look for `xapp-descriptor.json` if this is not set.
+# xapp_base_config_file: "config/xapp-descriptor.json"
+
+# Dry Run Mode: If true, logs actions but doesn't execute system changes (TDP, SST).
+dry_run: false
+
 # ------------------------------------------------------------------------------
-# xAppBase Configuration (if PowerManager inherits from it)
+# System Integration Paths
 # ------------------------------------------------------------------------------
-# Path to the configuration file for the underlying xAppBase library, if used.
-# Leave empty or comment out if not applicable or if xAppBase is configured differently.
-# xapp_base_config_file: "config/xapp_base_defaults.json"
+# Path to 'intel-speed-select' utility.
+intel_speed_select_path: "intel-speed-select"
+
+# Base path for Intel RAPL power capping interface.
+rapl_path_base: "/sys/class/powercap/intel-rapl:0"
+
+# (Optional) Override for RAPL max energy value if the counter wraps unexpectedly.
+# The code has a sensible default (2^60-1), so this is rarely needed.
+# rapl_max_energy_uj_override: 262143999998
 
 # ------------------------------------------------------------------------------
 # Core Affinity & RAN Component Definitions
 # ------------------------------------------------------------------------------
-# Define your Radio Access Network (RAN) components and the CPU cores
-# they are affinitized to. This information is used for Intel SST-CP CLOS setup.
-# Format: component_name: "core_list_string"
-# core_list_string can be single cores (e.g., "31") or ranges (e.g., "4-7")
-# or a comma-separated mix (e.g., "4-7,31").
-
+# Define RAN components and the CPU cores they are affinitized to.
+# This is used for Intel SST-CP CLOS setup.
 ran_cores:
-  cu0: "4"         # Example: Control Unit 0
-  du0: "0,6,7,8"        # Example: Distributed Unit 0
-  du1: "1,10,11,12"       # Example: Distributed Unit 1
-  du3: "2,14,15,16" # Corrected from du2 to du3 based on gnb_ids
-  du4: "3,18,19,20" # Corrected from du5 to du4 based on gnb_ids
+  cu0: "4"
+  du0: "0,6,7,8"
+  du1: "1,10,11,12"
+  du3: "2,14,15,16"
+  du4: "3,18,19,20"
 
-# Mapping of DU component names (from ran_cores) to their gNB IDs (E2 Node IDs for KPM)
+# Mapping of DU component names (from ran_cores) to their gNB IDs for KPM.
+# This is the source of truth for which DUs the xApp will manage.
 gnb_ids:
   du0: "gnbd_999_091_00019b_0"
   du1: "gnbd_999_092_00019b_1"
-  du3: "gnbd_999_094_00019b_3" # Assumed du3 is the component name
-  du4: "gnbd_999_095_00019b_4" # Assumed du4 is the component name
+  du3: "gnbd_999_094_00019b_3"
+  du4: "gnbd_999_095_00019b_4"
+
+# ------------------------------------------------------------------------------
+# Intel Speed Select Technology (SST-CP) Configuration
+# ------------------------------------------------------------------------------
+# Associates RAN components to SST-CP Classes of Service (CLOS).
+# Cores in 'ru_timing_cores' are automatically added to CLOS 0.
+clos_association:
+  0: [cu0, du0] # High-priority: CU, a main DU, and timing-critical cores.
+  1: [du1]
+  2: [du3]
+  3: [du4]
+
+# Sets the guaranteed minimum CPU frequency (in MHz) for each CLOS.
+clos_min_frequency:
+  0: 2000 # Highest priority CLOS
+  1: 1800
+  2: 1600
+  3: 1400 # Lowest priority CLOS
+
+# ------------------------------------------------------------------------------
+# Main Control Loop & PID Settings
+# ------------------------------------------------------------------------------
+# Granularity of the main control loop in seconds.
+main_loop_sleep_s: 0.1
+
+# How often to print the main statistics summary to the log.
+stats_print_interval_s: 10.0
+
+# Critical cores for the RU timing PID safety net.
+ru_timing_cores: "5,9,13,17"
+
+# Target CPU utilization percentage for the 'ru_timing_cores'. If exceeded, the PID acts.
+target_ru_timing_cpu_usage: 99.8
+
+# Interval (in seconds) at which the RU Timing PID logic runs.
+ru_timing_pid_interval_s: 1.0
+
+# Step size (in Watts) for the RU Timing PID when it triggers an increase.
+tdp_adjustment_step_w_large: 3.0
+
+# Number of recent samples to average for the RU Timing PID's CPU usage calculation.
+max_cpu_usage_samples: 3
 
 # ------------------------------------------------------------------------------
 # KPM (Key Performance Metrics) Subscription Settings
 # ------------------------------------------------------------------------------
+# The RAN Function ID for KPM service.
+kpm_ran_func_id: 2
+
 kpm_subscriptions:
   # Metrics to request per UE in Style 4 reports.
-  style4_metrics_per_ue: [
-    "DRB.RlcSduTransmittedVolumeDL",
-    "DRB.RlcSduTransmittedVolumeUL",
-    "RRU.PrbTotDl",
-    "RRU.PrbTotUl"
-  ]
+  style4_metrics_per_ue:
+    - "DRB.RlcSduTransmittedVolumeDL"
+    - "DRB.RlcSduTransmittedVolumeUL"
+  
+  # How often the gNB should generate and send a KPM report.
+  style4_report_period_ms: 1000
+  # The time window over which the gNB should aggregate data for a single report.
+  style4_granularity_period_ms: 1000
 
-  style4_report_period_ms: 1000 # Changed from 5000 to 1000 as per your last working example
-  style4_granularity_period_ms: 1000 # Changed from 5000 to 1000
+  # --- Optimizer Trigger Logic ---
+  # Number of reports to collect from EACH DU before making a decision.
+  optimizer_reports_per_du: 5
+  # Safety timeout in seconds in case a DU stops sending reports.
+  optimizer_max_interval_s: 10.0
+
+# ------------------------------------------------------------------------------
+# TDP (Thermal Design Power) & Contextual Bandit Optimizer
+# ------------------------------------------------------------------------------
+# Absolute allowed range for the CPU package TDP limit in Watts.
+tdp_range:
+  min: 90
+  max: 170
 
 contextual_bandit:
+  # Defines the discrete actions the agent can take (TDP change in Watts).
   actions_tdp_delta_w:
     "dec_10": -10.0
     "dec_5": -5.0
@@ -63,141 +133,24 @@ contextual_bandit:
     "inc_2": 2.0
     "inc_5": 5.0
     "inc_10": 10.0
-  context_dimension_features_only: 4 
-  lambda_: 1.0            # Regularization (default 1.0 for LinTS)
-  fit_intercept: True
-  v_sq: 0.3             # Variance scaling for Thompson Sampling. Smaller = less exploration. Try values like 0.01, 0.05, 0.1, 0.25. Default in lib is 1.0.
-  sample_from: "coef"    # "coef" or "ci"
-  method: "sm"         # "chol" or "sm"
-  beta_prior: uniform_optimistic     # "auto", null (None in Python), or specific tuple e.g. [[0.5, 2], 2]
-  smoothing: null        # null (None in Python) or tuple e.g. [1, 20]
-  random_state: 42       # Integer for reproducibility, or null for random
+
+  # Throughput threshold (in Mbps) to consider a UE "active" for the count.
+  active_ue_throughput_threshold_mbps: 5.0
+
+  # If the total network throughput changes by more than this factor (e.g., 1.0 = 100%)
+  # between cycles, the agent will not update its model on that noisy data point.
+  throughput_change_threshold_for_discard: 1.0
+
+  # Parameters for the Bootstrapped Thompson Sampling model.
+  bootstrapped_ts:
+    nsamples: 20          # Number of bootstrapped models. More is more robust.
+    lambda_: 1.0          # L2 regularization for the underlying linear regression.
+    fit_intercept: True   # Whether the model should learn a bias/intercept term.
+    # Prior to help guide the agent's initial exploration. "uniform_optimistic" is a good default.
+    beta_prior: "uniform_optimistic" # Options: "auto", "uniform_optimistic", null
+
+  # Parameters used to normalize context features to a [0, 1] range.
+  # Adjust these to match the expected operational range of your system.
   normalization_parameters:
-    # NO 'bias' feature needed here if fit_intercept=true
     cpu_headroom: {'min': -5.0, 'max': 20.0}
-    num_active_ues: {'min': 0.0, 'max': 5.0} # Set this to a reasonable max for your scenario
-    
-bootstrapped_ts:
-  # The number of models to train. More models = more robust, but slightly slower.
-  # 20 is a very reasonable number.
-  n_bootstraps: 20
-  # We can go back to a smaller lambda because the bootstrapping itself
-  # provides a lot of regularization and stability.
-  lambda_: 1.0
-  fit_intercept: True
-  beta_prior: "((1, 1), 5)"
-  # --- Idle Reward Logic Configuration ---
-  # idle_reward_scaling_factor: 1.0 # Used by 'closeness_with_bonus' if you keep that.
-  # idle_decrease_action_bonus: 0.2 # Used by 'closeness_with_bonus'
-  # increase_penalty_value: -1.0 # Used by 'closeness_with_bonus' for increase actions
-    
-  idle_reward_logic:
-    mode: "closeness_with_bonus" # Options: "closeness_with_bonus", "strong_min_focus", "original_penalty"
-    # Params for "strong_min_focus"
-    min_tdp_bonus: 1.0           # Reward for being at/achieving min TDP
-    decrease_progress_bonus: 0.3 # Extra bonus for decrease actions not yet at min
-    hold_penalty_factor: 0.7     # How much to penalize holding above min (0 to 1, higher is more penalty)
-    increase_penalty: -1.0       # Penalty for any increase action when idle
-    # Params for "closeness_with_bonus" (if you switch back to it)
-    scaling_factor: 0.5
-    decrease_action_bonus: 0.2
-    increase_penalty_value: -1.0 
-    
-  # --- Rule-Based Idle Descent (Optional) ---
-  enable_rule_based_idle_descent: false # Set to true to enable
-  rule_idle_descent_tdp_thresh_w: 110  # If TDP is above this when idle, rule kicks in
-  rule_idle_descent_step_w: 20         # How much to decrease TDP by
-  rule_idle_descent_max_steps: 3       # Max number of rule steps before bandit takes over again
-  
-# ------------------------------------------------------------------------------
-# Monitoring, Control Loop Timings & Logging
-# ------------------------------------------------------------------------------
-# Main Loop Sleep Interval (seconds): Granularity of the main control loop.
-# Should be smaller than other intervals. e.g., 0.1 for responsive checks.
-main_loop_sleep_s: 0.1
-
-# Statistics Print Interval (seconds): How often summary statistics are logged.
-stats_print_interval_s: 10 # Matches default optimizer_decision_interval_s
-
-# RU_Timing Cores: Critical cores for RU timing PID.
-# Format: "core_list_string" (e.g., "1,3,6,9")
-ru_timing_cores: "5,9,13,17"
-
-# ------------------------------------------------------------------------------
-# TDP (Thermal Design Power) Management
-# ------------------------------------------------------------------------------
-# Absolute allowed range for the CPU package TDP limit in Watts.
-tdp_range:
-  min: 90  # Minimum TDP in Watts
-  max: 170 # Maximum TDP in Watts
-
-# === RU Timing PID Controller Parameters ===
-# Target CPU utilization percentage for the *average of max* of 'ru_timing_cores'.
-target_ru_timing_cpu_usage: 99.8
-
-# Interval (in seconds) at which the RU Timing PID logic runs.
-ru_timing_pid_interval_s: 3 # e.g., adjust TDP for RU timing every 1 second
-
-# Sensitivity Factor for RU Timing PID.
-tdp_adjustment_sensitivity: 0.0005
-
-# Small Step (Watts) for RU Timing PID.
-tdp_adjustment_step_w_small: 1.0
-
-# Large Step (Watts) for RU Timing PID.
-tdp_adjustment_step_w_large: 3.0
-
-# Adaptive Step - Far Threshold Factor for RU Timing PID.
-adaptive_step_far_threshold_factor: 1.5
-
-# CPU Usage Averaging: Number of recent *average max* RU core CPU usage samples for RU Timing PID.
-max_cpu_usage_samples: 3
-
-# === Efficiency Optimizer (Thompson Sampling Bandit) Parameters ===
-# Interval (seconds) at which the Bandit Optimizer makes a decision.
-# This should be long enough for KPM metrics to reflect TDP changes and stabilize.
-# If kpm_report_period_ms is 1000 (1s), consider 5-10s here.
-optimizer_decision_interval_s: 5.0
-
-active_ue_throughput_threshold_mbps: 5
-# Bandit Optimizer Configuration
-
-
-# ------------------------------------------------------------------------------
-# Intel Speed Select Technology - Core Power (SST-CP) Configuration
-# ------------------------------------------------------------------------------
-# Defines associations between CPU cores (via RAN components) and SST-CP
-# Classes of Service (CLOS). Also sets minimum frequencies for each CLOS.
-
-# CLOS Association: Maps a CLOS ID (0-3) to a list of RAN component names.
-# 'ru_timing_cores' are automatically added to CLOS 0 if defined.
-clos_association:
-  0: [cu0, du0] # CLOS 0: Cores from cu0, du0, PLUS all ru_timing_cores.
-  1: [du1]      # Assign du1 to CLOS 1
-  2: [du3]      # Assign du3 to CLOS 2
-  3: [du4]      # Assign du4 to CLOS 3
-  # Ensure all DUs listed in ran_cores and gnb_ids are assigned here if desired.
-  # If a DU is not in a CLOS, it might run with default SST settings or be unmanaged.
-
-# CLOS Minimum Frequency: Guaranteed minimum CPU frequency (in MHz) for each CLOS.
-clos_min_frequency:
-  0: 2000 # Min frequency for cores in CLOS 0 (e.g., high priority CU, DU0, RU_timing)
-  1: 1800 # Min frequency for cores in CLOS 1
-  2: 1600 # Min frequency for cores in CLOS 2
-  3: 1400 # Min frequency for cores in CLOS 3
-
-# ------------------------------------------------------------------------------
-# System & Operational Settings
-# ------------------------------------------------------------------------------
-# Dry Run Mode: If true, prints commands but doesn't execute them.
-dry_run: false # Set to true for testing without system changes
-
-# Path to 'intel-speed-select' utility.
-intel_speed_select_path: "intel-speed-select"
-
-# Base path for Intel RAPL.
-rapl_path_base: "/sys/class/powercap/intel-rapl:0"
-
-# Override for RAPL max energy value (if energy_uj wraps around).
-# Default in code is 2^60-1. Only change if you know your RAPL counter's exact max.
-# rapl_max_energy_uj_override: 262143999998 # Example for a specific platform if needed
+    num_active_ues: {'min': 0.0, 'max': 5.0} # Set to a reasonable max UE count for your network.
