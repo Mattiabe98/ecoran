@@ -1186,7 +1186,7 @@ class PowerManager(xAppBase):
                         # Log the result
                         colored_max_seen = self._colorize(f'{self.max_efficiency_seen:.3f}', 'WHITE')
                         reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
-                        self._log(INFO, f"CB Reward (Active): RawEff={current_raw_efficiency:.3f} b/uJ, NormEff={normalized_efficiency:.3f}, MaxSeen={colored_max_seen}. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
+                        self._log(INFO, f"CB Reward (Active): RawEff={current_raw_efficiency:.3f} b/uJ, NormEff={current_normalized_efficiency:.3f}, MaxSeen={colored_max_seen}. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
                     else: # TRUE IDLE: Not stressed and no UEs
                         holding_zone_width_w = 5.0
                         if tdp_for_reward_eval <= (self.tdp_min_w + holding_zone_width_w):
