@@ -1073,6 +1073,7 @@ class PowerManager(xAppBase):
                     
                     # --- ADAPTIVE NORMALIZATION & STATE CHANGE LOGIC ---
                     is_active_ue_present = (current_num_active_ues > 0)
+                    is_workload_stable = True
                     if (self.total_bits_from_previous_optimizer_interval is not None and
                             self.total_bits_from_previous_optimizer_interval > 1e6): # Avoid triggering on idle fluctuations
                     
@@ -1082,7 +1083,8 @@ class PowerManager(xAppBase):
                         if workload_ratio < self.workload_drop_threshold:
                             self._log(INFO, f"Workload drop detected (ratio: {workload_ratio:.2f} < {self.workload_drop_threshold}). "
                                           f"Resetting max_efficiency_seen from {self.max_efficiency_seen:.3f} to 0.")
-                            self.max_efficiency_seen = 0.0
+                            is_workload_stable = False
+                            self.stable_efficiency_history.clear()
                     # Decay pushes the agent to hold, disable it.
                     # self.max_efficiency_seen *= self.max_eff_decay_factor 
                     # Ensure the new efficiency measurement can set the max if it's currently zero.
@@ -1091,8 +1093,10 @@ class PowerManager(xAppBase):
                     is_cpu_stressed = current_ru_cpu_usage_control_val > (self.target_ru_cpu_usage * 0.99)
                     if pid_fired_this_interval:
                         self._log(WARN, f"Instability detected: PID Safety Net was triggered this interval. Suppressing max_efficiency_seen update.")
+                        is_workload_stable = False
                     elif is_cpu_stressed:
                         self._log(WARN, f"Instability detected: CPU is stressed ({current_ru_cpu_usage_control_val:.2f}% > {self.target_ru_cpu_usage * 0.99:.2f}%). Suppressing max_efficiency_seen update.")
+                        is_workload_stable = False
                     
                     # Now update the throughput for the *next* interval's comparison
                     self.total_bits_from_previous_optimizer_interval = total_bits_optimizer_interval
@@ -1210,7 +1214,7 @@ class PowerManager(xAppBase):
 
                     # Now, run the optimizer step
                     self._run_contextual_bandit_optimizer_step(reward_for_bandit, current_context_vec, significant_throughput_change)
-                    if not pid_fired_this_interval and not is_cpu_stressed:
+                    if is_workload_stable:
                         self.stable_efficiency_history.append(current_raw_efficiency)
                     self.last_raw_efficiency = current_raw_efficiency
                     self.last_normalized_efficiency = current_normalized_efficiency
