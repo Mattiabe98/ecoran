@@ -229,7 +229,14 @@ class PowerManager(xAppBase):
 
         self.last_action_actual_tdp: Optional[float] = None
         self.last_action_requested_tdp: Optional[float] = None
+        
+        self.last_raw_efficiency: float = 0.0
+        self.last_normalized_efficiency: float = 0.0 # [+] Add this to store the previous normalized score.
+        self.baseline_window_size = int(cb_config.get('baseline_window_size', 50))
+        self.baseline_percentile = float(cb_config.get('baseline_percentile', 90.0))
+        self.min_baseline_samples = int(cb_config.get('min_baseline_samples', 10))
 
+        self.stable_efficiency_history = collections.deque(maxlen=self.baseline_window_size)
         self.pid_triggered_since_last_decision = False
         self.COLORS = {
             'RED': '\033[91m',
@@ -1053,6 +1060,16 @@ class PowerManager(xAppBase):
                     if num_kpm_reports_processed > 0 and interval_energy_uj is not None and interval_energy_uj > 1e-3:
                         current_raw_efficiency = total_bits_optimizer_interval / interval_energy_uj
 
+                    # 1. Calculate the dynamic baseline using ONLY past data.
+                    dynamic_baseline = 1e-9
+                    if len(self.stable_efficiency_history) >= self.min_baseline_samples:
+                        dynamic_baseline = np.percentile(self.stable_efficiency_history, self.baseline_percentile)
+                    elif len(self.stable_efficiency_history) > 0:
+                        dynamic_baseline = np.mean(self.stable_efficiency_history)
+                    
+                    # 2. Create the normalized efficiency feature FOR THE CONTEXT VECTOR.
+                    context_normalized_efficiency = np.clip(current_raw_efficiency / max(dynamic_baseline, 1e-9), 0.0, 1.0)
+                    
                     # --- ADAPTIVE NORMALIZATION & STATE CHANGE LOGIC ---
                     is_active_ue_present = (current_num_active_ues > 0)
                     if (self.total_bits_from_previous_optimizer_interval is not None and
@@ -1093,7 +1110,7 @@ class PowerManager(xAppBase):
                         current_ru_cpu_usage_control_val,
                         current_actual_tdp_for_context,
                         # Pass the pre-calculated normalized efficiency
-                        normalized_efficiency 
+                        context_normalized_efficiency 
                     )
 
 
@@ -1139,8 +1156,28 @@ class PowerManager(xAppBase):
                 
                     elif is_active_ue_present:
                         # --- Start with the efficiency-based reward as the default ---
-                        reward_for_bandit = normalized_efficiency ** 2
-                        
+                        # reward_for_bandit = normalized_efficiency ** 2
+
+                        # We also need to check if there was meaningful work in the *last* interval to make the delta valid.
+                        was_active_last_interval = self.total_bits_from_previous_optimizer_interval > 1e6 # e.g., > 1 Mbit
+                    
+                        if was_active_last_interval:
+                            # REGIME 1: ACTIVE-to-ACTIVE Transition
+                            # [*] REWARD IS THE DELTA OF NORMALIZED EFFICIENCIES.
+                            # This correctly captures relative improvement.
+                            normalized_efficiency_delta = current_normalized_efficiency - self.last_normalized_efficiency
+                            reward_for_bandit = normalized_efficiency_delta
+                            
+                            reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
+                            colored_reward = self._colorize(f'{reward_for_bandit:+.3f}', reward_color)
+                            self._log(INFO, f"CB Reward (Active->Active): NormEff change: {self.last_normalized_efficiency:.2f} -> {current_normalized_efficiency:.2f}. Reward: {colored_reward}")
+                    
+                        else:
+                            # REGIME 2: IDLE-to-ACTIVE Transition
+                            # The agent found a starting point. Reward it based on how good that point is.
+                            reward_for_bandit = current_normalized_efficiency ** 2
+                            self._log(INFO, f"CB Reward (Idle->Active): New traffic. NormEff={current_normalized_efficiency:.3f}. Shaped Reward={reward_for_bandit:.3f}")
+                                        
                         # --- Now, apply a penalty if stressed AND action was wrong ---
                         if current_ru_cpu_usage_control_val > (self.target_ru_cpu_usage * 0.99):
                             if action_delta_w <= 0: # If we held or decreased TDP when stressed...
@@ -1179,7 +1216,8 @@ class PowerManager(xAppBase):
 
                     # Now, run the optimizer step
                     self._run_contextual_bandit_optimizer_step(reward_for_bandit, current_context_vec, significant_throughput_change)
-                    
+                    if not pid_fired_this_interval and not is_cpu_stressed:
+                        self.stable_efficiency_history.append(current_raw_efficiency)
                     self.last_optimizer_run_time = loop_start_time
                 
                 if loop_start_time - self.last_stats_print_time >= self.stats_print_interval_s:
