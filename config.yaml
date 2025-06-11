@@ -108,7 +108,7 @@ kpm_subscriptions:
   style4_report_period_ms: 1000
   # The time window over which the gNB should aggregate data for a single report.
   style4_granularity_period_ms: 1000
-
+  du_activity_timeout_s: 5.0
   # --- Optimizer Trigger Logic ---
   # Number of reports to collect from EACH DU before making a decision.
   optimizer_reports_per_du: 5
