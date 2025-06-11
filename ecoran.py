@@ -1133,7 +1133,7 @@ class PowerManager(xAppBase):
                         else:
                             reward_for_bandit = 0.4 # Strong incentive
                             if is_active_ue_present:
-                                reward_for_bandit = max(normalized_efficiency ** 2,0.4)
+                                reward_for_bandit = max(current_normalized_efficiency - self.last_normalized_efficiency,0.4)
                             self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying strong incentive bonus. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
 
                     
@@ -1176,7 +1176,7 @@ class PowerManager(xAppBase):
                         else:
                             # REGIME 2: IDLE-to-ACTIVE Transition
                             # The agent found a starting point. Reward it based on how good that point is.
-                            reward_for_bandit = current_normalized_efficiency ** 2
+                            reward_for_bandit = current_normalized_efficiency
                             self._log(INFO, f"CB Reward (Idle->Active): New traffic. NormEff={current_normalized_efficiency:.3f}. Shaped Reward={reward_for_bandit:.3f}")
                                         
                         # --- Now, apply a penalty if stressed AND action was wrong ---
