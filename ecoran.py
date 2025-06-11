@@ -138,7 +138,6 @@ class PowerManager(xAppBase):
         self.context_dimension_features_only = int(cb_config.get('context_dimension_features_only', 8)) 
 
         self.workload_avg_window_size = int(cb_config.get('workload_avg_window_size', 3))
-        self.recent_workload_bits: List[float] = []
         # # LinTS specific parameters from config (with defaults)
         # self.lints_lambda_ = float(cb_config.get('lambda_', 1.0))  # Default from LinTS doc
         # self.lints_fit_intercept = bool(cb_config.get('fit_intercept', True))
@@ -225,8 +224,7 @@ class PowerManager(xAppBase):
         self.most_recent_calculated_reward_for_log: Optional[float] = None # For logging
         self.current_num_active_ues_for_log: int = 0
         self.pid_triggered_since_last_decision = False
-        self.max_efficiency_seen = 1e-9
-        self.max_eff_decay_factor = 0.995 # Add this new parameter
+
 
         self.last_action_actual_tdp: Optional[float] = None
         self.last_action_requested_tdp: Optional[float] = None
@@ -1013,37 +1011,6 @@ class PowerManager(xAppBase):
                             self._log(WARN, f"Optimizer: Sig. throughput change ({relative_change*100:.1f}%). Update might be skipped.")
                             significant_throughput_change = True
                     
-                    reset_efficiency_baseline = False
-                    
-                    # Only perform the check if we have a full window of history to compare against
-                    if len(self.recent_workload_bits) >= self.workload_avg_window_size:
-                        # Calculate the moving average of the recent past
-                        historical_avg_bits = sum(self.recent_workload_bits) / len(self.recent_workload_bits)
-                        
-                        # Only consider it a potential drop if the historical average was significant
-                        if historical_avg_bits > 1e7: # e.g., > 10 Megabits on average per interval
-                            
-                            # Use a safe divisor
-                            safe_historical_avg = max(historical_avg_bits, 1.0)
-                            workload_ratio = total_bits_optimizer_interval / safe_historical_avg
-                            
-                            if workload_ratio < self.workload_drop_threshold:
-                                self._log(INFO, f"Workload drop detected (Current Bits: {total_bits_optimizer_interval/1e6:.1f}Mb "
-                                              f"< {self.workload_drop_threshold*100:.0f}% of historical avg: {historical_avg_bits/1e6:.1f}Mb). "
-                                              f"Resetting max_efficiency_seen.")
-                                reset_efficiency_baseline = True
-                    
-                    # --- Update the memory window ---
-                    self.recent_workload_bits.append(total_bits_optimizer_interval)
-                    if len(self.recent_workload_bits) > self.workload_avg_window_size:
-                        self.recent_workload_bits.pop(0)
-                    
-                    # --- Act on the flag ---
-                    if reset_efficiency_baseline:
-                        self.max_efficiency_seen = 0.0
-                        # Also clear the history so the baseline can be rebuilt from scratch after the drop
-                        self.recent_workload_bits.clear()
-
                     # Determine effective TDP for reward calculation (the one bandit was aiming for unless PID overrode)
                     # self.optimizer_target_tdp_w was set by the *previous* bandit action OR by PID.
                     # self.current_tdp_w is the *actual* current HW TDP.
@@ -1082,7 +1049,7 @@ class PowerManager(xAppBase):
                         
                         if workload_ratio < self.workload_drop_threshold:
                             self._log(INFO, f"Workload drop detected (ratio: {workload_ratio:.2f} < {self.workload_drop_threshold}). "
-                                          f"Resetting max_efficiency_seen from {self.max_efficiency_seen:.3f} to 0.")
+                                          f"Resetting max_efficiency_seen to 0.")
                             is_workload_stable = False
                             self.stable_efficiency_history.clear()
                     # Decay pushes the agent to hold, disable it.
@@ -1163,7 +1130,8 @@ class PowerManager(xAppBase):
                             # REGIME 1: ACTIVE-to-ACTIVE Transition
                             # [*] REWARD IS THE DELTA OF NORMALIZED EFFICIENCIES.
                             # This correctly captures relative improvement.
-                            normalized_efficiency_delta = current_normalized_efficiency - self.last_normalized_efficiency
+                            previous_normalized_efficiency = np.clip(self.last_raw_efficiency / max(dynamic_baseline, 1e-9), 0.0, 1.0)
+                            normalized_efficiency_delta = current_normalized_efficiency - previous_normalized_efficiency
                             reward_for_bandit = np.sign(normalized_efficiency_delta) * np.sqrt(abs(normalized_efficiency_delta))
                             
                             reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
