@@ -201,6 +201,8 @@ class PowerManager(xAppBase):
             nsamples=self.bts_nsamples,
             batch_train=True, 
             beta_prior=self.bts_beta_prior,
+            njobs_arms=1,
+            njobs_samples=1,
             random_state=42
         )
 
@@ -956,18 +958,26 @@ class PowerManager(xAppBase):
 
             while self.running: 
                 loop_start_time = time.monotonic()
-
+                current_ru_cpu_usage_control_val = 0.0
                 if self.ru_timing_core_indices: self._update_ru_core_msr_data()
-                current_ru_cpu_usage_control_val = self._get_control_ru_timing_cpu_usage()
+                
 
                 # Update current_tdp_w to reflect actual hardware state before any decisions
                 self.current_tdp_w = self._read_current_tdp_limit_w()
 
                 if loop_start_time - self.last_ru_pid_run_time >= self.ru_timing_pid_interval_s:
-                    if self.ru_timing_core_indices: self._run_ru_timing_pid_step(current_ru_cpu_usage_control_val)
+                    if self.ru_timing_core_indices:
+                        self._update_ru_core_msr_data()
+                        current_ru_cpu_usage_control_val = self._get_control_ru_timing_cpu_usage()
+                        self._run_ru_timing_pid_step(current_ru_cpu_usage_control_val)
+                        
                     self.last_ru_pid_run_time = loop_start_time
-                
+                    
                 if loop_start_time - self.last_optimizer_run_time >= self.optimizer_decision_interval_s:
+                    # Refresh MSR data again right before using it for the context vector
+                    if self.ru_timing_core_indices:
+                        self._update_ru_core_msr_data()
+                        current_ru_cpu_usage_control_val = self._get_control_ru_timing_cpu_usage()
                     # Refresh current_tdp_w again as PID might have acted
                     pid_fired_this_interval = self.pid_triggered_since_last_decision
                     self.current_tdp_w = self._read_current_tdp_limit_w()
