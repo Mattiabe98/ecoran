@@ -30,7 +30,7 @@ spec:
             - name: RMR_SRC_ID
               value: "xapp-service"
             - name: RMR_RTG_SVC
-              value: "4561"
+              value: "-1"
           volumeMounts:
             - name: xapp-rtg
               mountPath: /opt/ric/config/uta-rtg.rt
