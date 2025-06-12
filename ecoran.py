@@ -908,13 +908,37 @@ class PowerManager(xAppBase):
                 self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying strong incentive. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
         
         elif is_active_ue_present:
-            previous_normalized_efficiency = self.last_normalized_efficiency
-            normalized_efficiency_delta = current_normalized_efficiency - previous_normalized_efficiency
-            reward_for_bandit = np.sign(normalized_efficiency_delta) * np.sqrt(abs(normalized_efficiency_delta))
+            # --- HYBRID REWARD V4: RELATIVE CHANGE + ABSOLUTE BONUS ---
+            
+            # 1. Calculate the primary RELATIVE reward signal based on RAW efficiency change.
+            relative_reward_component = 0.0
+            if self.last_raw_efficiency > 1e-9:
+                raw_efficiency_change_pct = (current_raw_efficiency - self.last_raw_efficiency) / self.last_raw_efficiency
+                # Use tanh to scale the reward for the change. A 20% change is significant.
+                reward_shaping_factor = 5.0
+                relative_reward_component = np.tanh(raw_efficiency_change_pct * reward_shaping_factor)
+            elif current_raw_efficiency > 1e-9:
+                # First time we see traffic, this is a discovery. Give a strong positive reward.
+                relative_reward_component = 0.5
+        
+            # 2. Calculate the secondary ABSOLUTE reward signal based on CURRENT state quality.
+            # We use the normalized efficiency here because it tells us "how good is this state
+            # compared to the best I've seen in this workload?".
+            # We square it to make being "very good" (e.g., 0.9 -> 0.81) much better than "okay" (e.g., 0.5 -> 0.25).
+            absolute_reward_component = (current_normalized_efficiency ** 2)
+            
+            # 3. Combine the signals. The relative part guides the search, the absolute part provides an incentive floor.
+            # We weight the absolute part less so that the agent is still primarily driven by making improvements.
+            # A good weighting is crucial and may need tuning. Let's start with 80% relative, 20% absolute.
+            reward_for_bandit = (0.8 * relative_reward_component) + (0.2 * absolute_reward_component)
+        
+            # --- Detailed Logging for Clarity ---
             reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
             colored_reward = self._colorize(f'{reward_for_bandit:+.3f}', reward_color)
-            self._log(INFO, f"CB Reward (Active): NormEff change: {previous_normalized_efficiency:.2f} -> {current_normalized_efficiency:.2f}. Base Reward: {colored_reward}")
-
+            self._log(INFO, f"CB Reward (Active): RawEff: {self.last_raw_efficiency:.3f} -> {current_raw_efficiency:.3f} | NormEff: {current_normalized_efficiency:.2f}")
+            self._log(INFO, f"                 -> Components: Relative={relative_reward_component:+.3f}, Absolute={absolute_reward_component:+.3f} => Final Reward: {colored_reward}")
+        
+            # Additive penalties for instability still apply
             if is_cpu_stressed and action_delta_w <= 0:
                 self._log(WARN, f"CB REWARD MOD: Stressed CPU at {current_ru_cpu_usage_control_val:.2f}%. Applying penalty of -0.3 to reward.")
                 reward_for_bandit -= 0.3
@@ -951,7 +975,9 @@ class PowerManager(xAppBase):
 
         self._run_contextual_bandit_optimizer_step(reward_for_bandit, current_context_vec, significant_throughput_change)
         
-        if is_workload_stable: self.stable_efficiency_history.append(current_raw_efficiency)
+        if is_workload_stable:
+            self.stable_efficiency_history.append(current_raw_efficiency)
+            
         self.last_raw_efficiency = current_raw_efficiency
         self.last_normalized_efficiency = current_normalized_efficiency
         self.total_bits_from_previous_optimizer_interval = total_bits_optimizer_interval
