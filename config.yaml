@@ -72,7 +72,7 @@ clos_min_frequency:
 # Main Control Loop & PID Settings
 # ------------------------------------------------------------------------------
 # Granularity of the main control loop in seconds.
-main_loop_sleep_s: 0.1
+main_loop_sleep_s: 1.0
 
 # How often to print the main statistics summary to the log.
 stats_print_interval_s: 10.0
