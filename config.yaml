@@ -104,13 +104,13 @@ kpm_subscriptions:
     - "DRB.RlcSduTransmittedVolumeDL"
     - "DRB.RlcSduTransmittedVolumeUL"
   # How often the gNB should generate and send a KPM report.
-  style4_report_period_ms: 1000
+  style4_report_period_ms: 5000
   # The time window over which the gNB should aggregate data for a single report.
-  style4_granularity_period_ms: 1000
-  du_activity_timeout_s: 5.0
+  style4_granularity_period_ms: 5000
+  du_activity_timeout_s: 6.0
   # --- Optimizer Trigger Logic ---
   # Number of reports to collect from EACH DU before making a decision.
-  optimizer_reports_per_du: 5
+  optimizer_reports_per_du: 1
   # Safety timeout in seconds in case a DU stops sending reports.
   optimizer_max_interval_s: 10.0
 
