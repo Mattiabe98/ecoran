@@ -189,7 +189,7 @@ class PowerManager(xAppBase):
         
         self.kpm_data_lock = threading.Lock()
         self.accumulated_kpm_metrics: Dict[str, Dict[str, Any]] = collections.defaultdict(
-            lambda: {'bits_sum_dl':0.0, 'bits_sum_ul':0.0, 'prb_sum_dl':0.0, 'prb_sum_ul':0.0, 'num_reports':0}
+            lambda: {'bits_sum_dl':0.0, 'bits_sum_ul':0.0, 'num_reports':0}
         )
         self.current_interval_per_ue_data: Dict[str, Dict[str, float]] = collections.defaultdict(lambda: {'total_bits': 0.0})
 
@@ -723,7 +723,7 @@ class PowerManager(xAppBase):
                     self._log(WARN, f"KPM CB: Invalid 'ueMeasData' format from {e2_agent_id}. Data: {kpm_meas_data}")
                     return
                 
-                gNB_data_this_report = {'dl_bits': 0.0, 'ul_bits': 0.0, 'dl_prb': 0.0, 'ul_prb': 0.0}
+                gNB_data_this_report = {'dl_bits': 0.0, 'ul_bits': 0.0}
     
                 for ue_id_str, per_ue_measurements in ue_meas_data_map.items():
                     global_ue_id = f"{e2_agent_id}_{ue_id_str}" 
@@ -741,9 +741,6 @@ class PowerManager(xAppBase):
                             elif metric_name == 'DRB.RlcSduTransmittedVolumeUL':
                                 ue_ul_bits_this_ue = float(value) * 1000.0 
                                 gNB_data_this_report['ul_bits'] += ue_ul_bits_this_ue
-                            # You removed PRB from your config, so I will comment these out.
-                            # elif metric_name == 'RRU.PrbTotDl': gNB_data_this_report['dl_prb'] += float(value)
-                            # elif metric_name == 'RRU.PrbTotUl': gNB_data_this_report['ul_prb'] += float(value)
     
                     with self.kpm_data_lock:
                         # Using defaultdict here is fine.
@@ -755,8 +752,6 @@ class PowerManager(xAppBase):
                     acc = self.accumulated_kpm_metrics[e2_agent_id]
                     acc['bits_sum_dl'] += gNB_data_this_report['dl_bits']
                     acc['bits_sum_ul'] += gNB_data_this_report['ul_bits']
-                    acc['prb_sum_dl'] += gNB_data_this_report['dl_prb']
-                    acc['prb_sum_ul'] += gNB_data_this_report['ul_prb']
                     acc['num_reports'] += 1
     
                     # This is the logic that was likely failing or not being reached.
@@ -799,7 +794,7 @@ class PowerManager(xAppBase):
         if not nodes: self._log(WARN, "No gNB IDs configured for KPM subscriptions."); return
 
         kpm_config = self.config.get('kpm_subscriptions', {})
-        style4_metrics = kpm_config.get('style4_metrics_per_ue', ['DRB.RlcSduTransmittedVolumeDL', 'DRB.RlcSduTransmittedVolumeUL', 'RRU.PrbTotDl', 'RRU.PrbTotUl'])
+        style4_metrics = kpm_config.get('style4_metrics_per_ue', ['DRB.RlcSduTransmittedVolumeDL', 'DRB.RlcSduTransmittedVolumeUL'])
         style4_report_p_ms = int(kpm_config.get('style4_report_period_ms', 1000))
         style4_gran_p_ms = int(kpm_config.get('style4_granularity_period_ms', style4_report_p_ms))
         matching_ue_conds_config = kpm_config.get('style4_matching_ue_conditions', 
