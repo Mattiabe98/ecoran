@@ -149,7 +149,7 @@ class xAppBase(object):
     def _run(self):
         while self.running:
             try:
-                sbuf = rmr.rmr_torcv_msg(self.rmr_client, None, 100)
+                sbuf = rmr.rmr_torcv_msg(self.rmr_client, None, 5100) # INCREASED TIMEOUT TO 5.1 SECONDS TO REDUCE CPU. USED WITH 5 S PERIODICITY
                 summary = rmr.message_summary(sbuf)
             except Exception as e:
                 continue
