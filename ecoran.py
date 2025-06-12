@@ -768,23 +768,37 @@ class PowerManager(xAppBase):
                 import traceback
                 self._log(ERROR, traceback.format_exc())
 
-    def _get_and_reset_accumulated_kpm_metrics(self) -> Dict[str, Dict[str, Any]]:
+    def _get_and_reset_kpm_data_for_cycle(self, interval_duration_s: float) -> Tuple[Dict[str, Any], int]:
+        """
+        Atomically gets a snapshot of all accumulated KPM data for the optimizer cycle,
+        calculates the active UE count, and then resets all KPM accumulators.
+        This centralized function prevents race conditions between different data structures.
+        
+        Returns:
+            Tuple[Dict[str, Any], int]: A tuple containing:
+                - The snapshot of summed KPM metrics.
+                - The number of active UEs in the interval.
+        """
         with self.kpm_data_lock:
-            snap = dict(self.accumulated_kpm_metrics)
-            self.accumulated_kpm_metrics.clear()
-        return snap
-
-    def _get_and_reset_active_ue_count_and_data(self, interval_duration_s: float) -> Tuple[int, Dict[str, Dict[str, float]]]:
-        active_ue_count = 0
-        threshold_bits = self.active_ue_throughput_threshold_mbps * 1e6 * interval_duration_s
-
-        with self.kpm_data_lock:
+            # 1. Take a snapshot of the primary accumulator
+            kpm_metrics_snapshot = dict(self.accumulated_kpm_metrics)
+            
+            # 2. Calculate active UEs from the per-UE data before clearing it
+            active_ue_count = 0
+            threshold_bits = self.active_ue_throughput_threshold_mbps * 1e6 * interval_duration_s
             for ue_data in self.current_interval_per_ue_data.values():
-                if ue_data.get('total_bits', 0.0) >= threshold_bits :
+                if ue_data.get('total_bits', 0.0) >= threshold_bits:
                     active_ue_count += 1
-            per_ue_data_snap = dict(self.current_interval_per_ue_data)
+            
+            # 3. Atomically reset all data structures for the next interval
+            self.accumulated_kpm_metrics.clear()
             self.current_interval_per_ue_data.clear()
-        return active_ue_count, per_ue_data_snap
+            # Note: We do NOT reset self.reports_received_this_interval here.
+            # That is handled by the main loop's trigger logic.
+
+            self._log(DEBUG_ALL, f"Retrieved KPM data for cycle. Metrics Snapshot: {kpm_metrics_snapshot}, Active UEs: {active_ue_count}")
+            
+        return kpm_metrics_snapshot, active_ue_count
 
     def _setup_kpm_subscriptions(self):
         self._log(INFO, "--- Setting up KPM Style 4 Subscriptions (Per-UE Metrics) ---")
@@ -821,7 +835,6 @@ class PowerManager(xAppBase):
 
     def _perform_optimizer_cycle(self, interval_duration_s: float):
         """Contains all logic for a single optimizer decision cycle."""
-        # 1. --- Gather Current State ---
         if self.ru_timing_core_indices:
             self._update_ru_core_msr_data()
             current_ru_cpu_usage_control_val = self._get_control_ru_timing_cpu_usage()
@@ -831,20 +844,18 @@ class PowerManager(xAppBase):
         pid_fired_this_interval = self.pid_triggered_since_last_decision
         self.current_tdp_w = self._read_current_tdp_limit_w()
 
-        interval_energy_uj = self._get_interval_energy_uj_for_optimizer()
-        kpm_summed_data = self._get_and_reset_accumulated_kpm_metrics()
-        current_num_active_ues, _ = self._get_and_reset_active_ue_count_and_data(interval_duration_s)
+        # --- Centralized KPM Data Retrieval ---
+        kpm_summed_data, current_num_active_ues = self._get_and_reset_kpm_data_for_cycle(interval_duration_s)
         self.current_num_active_ues_for_log = current_num_active_ues
-
-        total_bits_optimizer_interval = sum(d.get('dl_bits', 0.0) + d.get('ul_bits', 0.0) for d in kpm_summed_data.values())
         
-        # 2. --- Calculate Core Metrics for Reward & Context ---
-        significant_throughput_change = False
-        if self.total_bits_from_previous_optimizer_interval is not None and self.total_bits_from_previous_optimizer_interval > 1e-6:
-            if abs(total_bits_optimizer_interval - self.total_bits_from_previous_optimizer_interval) / self.total_bits_from_previous_optimizer_interval > self.throughput_change_threshold_for_discard:
-                significant_throughput_change = True
-                self._log(WARN, f"Optimizer: Sig. throughput change detected. Update might be skipped.")
+        interval_energy_uj = self._get_interval_energy_uj_for_optimizer()
 
+        # --- Data Aggregation (Now simpler) ---
+        total_bits_optimizer_interval = sum(d.get('bits_sum_dl', 0.0) + d.get('bits_sum_ul', 0.0) for d in kpm_summed_data.values())
+        
+        self._log(DEBUG_ALL, f"Optimizer Cycle: Total bits for interval = {total_bits_optimizer_interval}")
+
+        # --- The rest of the function remains identical ---
         current_raw_efficiency = (total_bits_optimizer_interval / interval_energy_uj) if interval_energy_uj and interval_energy_uj > 1e-3 else 0.0
         
         dynamic_baseline = 1e-9
@@ -856,12 +867,17 @@ class PowerManager(xAppBase):
         current_normalized_efficiency = np.clip(current_raw_efficiency / max(dynamic_baseline, 1e-9), 0.0, 1.0)
         
         is_workload_stable = True
+        significant_throughput_change = False
         if self.total_bits_from_previous_optimizer_interval is not None and self.total_bits_from_previous_optimizer_interval > 1e6:
             workload_ratio = total_bits_optimizer_interval / self.total_bits_from_previous_optimizer_interval
             if workload_ratio < self.workload_drop_threshold:
                 self._log(INFO, f"Workload drop detected. Resetting efficiency baseline.")
                 is_workload_stable = False
                 self.stable_efficiency_history.clear()
+            
+            if abs(total_bits_optimizer_interval - self.total_bits_from_previous_optimizer_interval) / self.total_bits_from_previous_optimizer_interval > self.throughput_change_threshold_for_discard:
+                significant_throughput_change = True
+                self._log(WARN, f"Optimizer: Sig. performance score change detected. Update might be skipped.")
 
         is_cpu_stressed = current_ru_cpu_usage_control_val > (self.target_ru_cpu_usage * 0.99)
         if pid_fired_this_interval or is_cpu_stressed:
@@ -869,68 +885,56 @@ class PowerManager(xAppBase):
             if pid_fired_this_interval: self._log(WARN, "Instability: PID triggered. Suppressing efficiency history update.")
             if is_cpu_stressed: self._log(WARN, f"Instability: CPU stressed ({current_ru_cpu_usage_control_val:.2f}%). Suppressing efficiency history update.")
 
-        # 3. --- Get Previous Action Info ---
+        # Get Previous Action Info
         action_delta_w = 0.0
         chosen_arm_key = "N/A"
         if self.last_selected_arm_index is not None:
             chosen_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
             action_delta_w = self.bandit_actions.get(chosen_arm_key, 0.0)
 
-        # 4. --- Hierarchical Reward Calculation (All logic restored) ---
+        # Hierarchical Reward Calculation
         reward_for_bandit = 0.0
         is_active_ue_present = current_num_active_ues > 0
 
-        # HIERARCHY 1: PID Trigger
         if pid_fired_this_interval:
             self.pid_triggered_since_last_decision = False
             if action_delta_w <= 0:
                 reward_for_bandit = -0.4
                 self._log(WARN, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was wrong. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'RED')}")
-            else: # action_delta_w > 0
+            else:
                 reward_for_bandit = 0.4
                 if is_active_ue_present:
-                    # If we were active, also consider the efficiency change, but guarantee a strong positive reward
                     reward_for_bandit = max(current_normalized_efficiency - self.last_normalized_efficiency, 0.4)
                 self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying strong incentive. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
         
-        # HIERARCHY 2: Normal Operation (Active or Idle)
         elif is_active_ue_present:
-            # ACTIVE state: reward is based on the delta of normalized efficiencies
             previous_normalized_efficiency = self.last_normalized_efficiency
             normalized_efficiency_delta = current_normalized_efficiency - previous_normalized_efficiency
-            # Use a signed square root to amplify smaller changes near zero
             reward_for_bandit = np.sign(normalized_efficiency_delta) * np.sqrt(abs(normalized_efficiency_delta))
-            
             reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
             colored_reward = self._colorize(f'{reward_for_bandit:+.3f}', reward_color)
             self._log(INFO, f"CB Reward (Active): NormEff change: {previous_normalized_efficiency:.2f} -> {current_normalized_efficiency:.2f}. Base Reward: {colored_reward}")
 
-            # PENALTY for being stressed and making the wrong move
             if is_cpu_stressed and action_delta_w <= 0:
                 self._log(WARN, f"CB REWARD MOD: Stressed CPU at {current_ru_cpu_usage_control_val:.2f}%. Applying penalty of -0.3 to reward.")
                 reward_for_bandit -= 0.3
-
-        else: # TRUE IDLE state: Not stressed and no active UEs
+        else:
             holding_zone_width_w = 5.0
             if self.optimizer_target_tdp_w <= (self.tdp_min_w + holding_zone_width_w):
                 if action_delta_w == 0: reward_for_bandit = 0.2
                 elif action_delta_w < 0: reward_for_bandit = 0.05
                 else: reward_for_bandit = -0.4
-            else: # Idle but high TDP
-                # Normalized excursion from min TDP. 0 at min, 1 at max.
+            else:
                 norm_tdp_excursion = (self.optimizer_target_tdp_w - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w) if (self.tdp_max_w > self.tdp_min_w) else 0
                 if action_delta_w < 0:
-                    # Strong reward for decreasing power, scaled by how high the TDP is
                     reward_for_bandit = 0.2 + 0.3 * norm_tdp_excursion
                 elif action_delta_w == 0:
-                    reward_for_bandit = 0.0 # No reward for holding a high idle TDP
-                else: # Increasing TDP when idle and high is very bad
+                    reward_for_bandit = 0.0
+                else:
                     reward_for_bandit = -0.3 - 0.2 * norm_tdp_excursion
-            
             reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
             self._log(INFO, f"CB Reward (True Idle): Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
 
-        # PENALTY for ineffective (clipped) actions - APPLIES TO ALL HIERARCHIES
         if (self.last_action_requested_tdp is not None and 
             self.last_action_actual_tdp is not None and 
             action_delta_w > 0 and 
@@ -938,18 +942,15 @@ class PowerManager(xAppBase):
             self._log(WARN, f"CB REWARD: Ineffective Action, -0.25 penalty added. Requested {self.last_action_requested_tdp:.1f}W but clipped to {self.last_action_actual_tdp:.1f}W.")
             reward_for_bandit -= 0.25
         
-        # Final clipping and storing for logs
         reward_for_bandit = np.clip(reward_for_bandit, -1.0, 1.0)
         self.most_recent_calculated_reward_for_log = reward_for_bandit
         
-        # 5. --- Create Context and Run Bandit Step ---
         current_context_vec = self._get_current_context_vector(
             current_num_active_ues, current_ru_cpu_usage_control_val, self.current_tdp_w, current_normalized_efficiency
         )
 
         self._run_contextual_bandit_optimizer_step(reward_for_bandit, current_context_vec, significant_throughput_change)
         
-        # 6. --- Update State for Next Cycle ---
         if is_workload_stable: self.stable_efficiency_history.append(current_raw_efficiency)
         self.last_raw_efficiency = current_raw_efficiency
         self.last_normalized_efficiency = current_normalized_efficiency
