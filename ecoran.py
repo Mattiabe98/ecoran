@@ -701,12 +701,12 @@ class PowerManager(xAppBase):
                 # --- START: NEW DEBUGGING BLOCK ---
                 # Let's see the raw data before we try to parse it.
                 # This will show us exactly what the gNB is sending.
-                try:
-                    # Assuming the library can return a raw dictionary representation
-                    raw_meas_data_for_log = self.e2sm_kpm.get_meas_data_dict(indication_msg_bytes)
-                    self._log(DEBUG_ALL, f"KPM PAYLOAD from {e2_agent_id}: {json.dumps(raw_meas_data_for_log)}")
-                except Exception as e_log:
-                    self._log(WARN, f"Could not log raw KPM payload: {e_log}")
+                # try:
+                #     # Assuming the library can return a raw dictionary representation
+                #     raw_meas_data_for_log = self.e2sm_kpm.get_meas_data_dict(indication_msg_bytes)
+                #     self._log(DEBUG_ALL, f"KPM PAYLOAD from {e2_agent_id}: {json.dumps(raw_meas_data_for_log)}")
+                # except Exception as e_log:
+                #     self._log(WARN, f"Could not log raw KPM payload: {e_log}")
                 kpm_meas_data = self.e2sm_kpm.extract_meas_data(indication_msg_bytes)
         
                 if not kpm_meas_data: 
