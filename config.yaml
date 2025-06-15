@@ -84,7 +84,7 @@ ru_timing_cores: "5,9,13,17"
 target_ru_timing_cpu_usage: 99.8
 
 # Interval (in seconds) at which the RU Timing PID logic runs.
-ru_timing_pid_interval_s: 1.0
+ru_timing_pid_interval_s: 3.0
 
 # Step size (in Watts) for the RU Timing PID when it triggers an increase.
 tdp_adjustment_step_w_large: 3.0
