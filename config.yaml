@@ -126,7 +126,7 @@ kpm_subscriptions:
 # Absolute allowed range for the CPU package TDP limit in Watts.
 tdp_range:
   min: 90
-  max: 170
+  max: 185
 
 contextual_bandit:
   # Defines the discrete actions the agent can take (TDP change in Watts).
