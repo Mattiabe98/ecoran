@@ -429,10 +429,13 @@ class PowerManager(xAppBase):
             self._log(ERROR, msg)
             raise RuntimeError(msg)
 
+
     def _setup_intel_sst(self):
         self._log(INFO, "--- Configuring Intel SST-CP ---")
         try:
             self._run_command(["intel-speed-select", "core-power", "enable"]) 
+
+            # Set MINIMUM frequency per CLoS
             for cid_key, freq_mhz_str in self.config.get('clos_min_frequency', {}).items():
                 try:
                     freq_val = str(freq_mhz_str) 
@@ -440,6 +443,15 @@ class PowerManager(xAppBase):
                     self._log(INFO, f"SST-CP: Set CLOS {cid_key} min frequency to {freq_val} MHz.")
                 except Exception as e_clos_freq:
                     self._log(ERROR, f"SST-CP: Failed to set min freq for CLOS {cid_key} to {freq_mhz_str}: {e_clos_freq}")
+
+            # Set MAXIMUM frequency per CLoS
+            for cid_key, freq_mhz_str in self.config.get('clos_max_frequency', {}).items():
+                try:
+                    freq_val = str(freq_mhz_str) 
+                    self._run_command(["intel-speed-select", "core-power", "config", "-c", str(cid_key), "--max", freq_val])
+                    self._log(INFO, f"SST-CP: Set CLOS {cid_key} max frequency to {freq_val} MHz.")
+                except Exception as e_clos_freq:
+                    self._log(ERROR, f"SST-CP: Failed to set max freq for CLOS {cid_key} to {freq_mhz_str}: {e_clos_freq}")
             
             ran_cores = {name: self._parse_core_list_string(str(core_list_str))
                          for name, core_list_str in self.config.get('ran_cores', {}).items()}
@@ -479,6 +491,7 @@ class PowerManager(xAppBase):
             self._log(ERROR, f"Intel SST-CP setup error: {e}")
             if not self.dry_run:
                 raise RuntimeError(f"SST-CP Setup Failed: {e}")
+            
 
     def _read_current_tdp_limit_w(self) -> float:
         if self.dry_run and hasattr(self, 'optimizer_target_tdp_w'): 
