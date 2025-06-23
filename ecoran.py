@@ -429,39 +429,60 @@ class PowerManager(xAppBase):
             self._log(ERROR, msg)
             raise RuntimeError(msg)
 
-
     def _setup_intel_sst(self):
         self._log(INFO, "--- Configuring Intel SST-CP ---")
         try:
-            self._run_command(["intel-speed-select", "core-power", "enable", "-p", "1"])
+            self._run_command(["intel-speed-select", "core-power", "enable"])
             
             clos_min_freqs = self.config.get('clos_min_frequency', {}) or {}
             clos_max_freqs = self.config.get('clos_max_frequency', {}) or {}
-            all_clos_ids = sorted(list(set(clos_min_freqs.keys()) | set(clos_max_freqs.keys())))
+            clos_weights = self.config.get('clos_weights', {}) or {}
+            priority_scheme = self.config.get('clos_priority_scheme', 'ordered').lower()
+
+            if priority_scheme not in ['ordered', 'proportional']:
+                self._log(WARN, f"Invalid 'clos_priority_scheme' ('{priority_scheme}'). Defaulting to 'ordered'.")
+                priority_scheme = 'ordered'
+            self._log(INFO, f"SST-CP: Using '{priority_scheme}' priority scheme.")
+
+            all_clos_ids = sorted(list(set(clos_min_freqs.keys()) | set(clos_max_freqs.keys()) | set(clos_weights.keys())))
 
             for cid_key in all_clos_ids:
                 try:
-                    min_freq = clos_min_freqs.get(cid_key)
-                    max_freq = clos_max_freqs.get(cid_key)
-
                     cmd_parts = ["intel-speed-select", "core-power", "config", "-c", str(cid_key)]
                     log_msg_parts = []
 
+                    # Add priority scheme
+                    if priority_scheme == 'proportional':
+                        cmd_parts.extend(["-p", "0"])
+                        weight = clos_weights.get(cid_key)
+                        if weight is not None:
+                            cmd_parts.extend(["--weight", str(weight)])
+                            log_msg_parts.append(f"weight {weight}")
+                        else:
+                            self._log(WARN, f"SST-CP: Proportional mode enabled, but no weight found for CLOS {cid_key}.")
+                    else: # ordered
+                        cmd_parts.extend(["-p", "1"])
+                    
+                    # Add min/max frequencies
+                    min_freq = clos_min_freqs.get(cid_key)
                     if min_freq is not None:
                         cmd_parts.extend(["--min", str(min_freq)])
-                        log_msg_parts.append(f"min freq to {min_freq} MHz")
+                        log_msg_parts.append(f"min {min_freq}MHz")
                     
+                    max_freq = clos_max_freqs.get(cid_key)
                     if max_freq is not None:
                         cmd_parts.extend(["--max", str(max_freq)])
-                        log_msg_parts.append(f"max freq to {max_freq} MHz")
+                        log_msg_parts.append(f"max {max_freq}MHz")
                     
-                    self._run_command(cmd_parts)
-                    
-                    log_msg = f"SST-CP: Set CLOS {cid_key} " + ", ".join(log_msg_parts) + "."
-                    self._log(INFO, log_msg)
+                    if len(log_msg_parts) > 0:
+                        self._run_command(cmd_parts)
+                        log_msg = f"SST-CP: Configured CLOS {cid_key} with " + ", ".join(log_msg_parts) + "."
+                        self._log(INFO, log_msg)
+                    else:
+                        self._log(INFO, f"SST-CP: No min/max/weight configuration for CLOS {cid_key}, skipping config command.")
 
                 except Exception as e_clos_freq:
-                    self._log(ERROR, f"SST-CP: Failed to set freq for CLOS {cid_key}: {e_clos_freq}")
+                    self._log(ERROR, f"SST-CP: Failed to configure CLOS {cid_key}: {e_clos_freq}")
 
             ran_cores = {name: self._parse_core_list_string(str(core_list_str))
                          for name, core_list_str in self.config.get('ran_cores', {}).items()}
@@ -501,7 +522,6 @@ class PowerManager(xAppBase):
             self._log(ERROR, f"Intel SST-CP setup error: {e}")
             if not self.dry_run:
                 raise RuntimeError(f"SST-CP Setup Failed: {e}")
-            
 
     def _read_current_tdp_limit_w(self) -> float:
         if self.dry_run and hasattr(self, 'optimizer_target_tdp_w'): 
@@ -1040,7 +1060,7 @@ class PowerManager(xAppBase):
                         self._run_ru_timing_pid_step(current_ru_cpu_usage)
                     self.last_ru_pid_run_time = loop_start_time
                 
-                # --- New, Corrected Adaptive Optimizer Trigger Logic ---
+                # --- Adaptive Optimizer Trigger Logic ---
                 now = time.monotonic()
                 should_run_optimizer = False
                 reason = ""
@@ -1057,6 +1077,14 @@ class PowerManager(xAppBase):
                             du_id for du_id in self.expected_du_ids
                             if (now - self.last_report_time_per_du.get(du_id, 0.0)) < self.du_activity_timeout_s
                         }
+                        
+                        # --- BUG FIX: Reset report count for DUs that have become inactive ---
+                        inactive_dus = self.expected_du_ids - active_du_set
+                        for du_id in inactive_dus:
+                            if self.reports_received_this_interval.get(du_id, 0) > 0:
+                                self._log(DEBUG_KPM, f"DU '{du_id}' became inactive. Resetting its report count from {self.reports_received_this_interval[du_id]} to 0.")
+                                self.reports_received_this_interval[du_id] = 0
+                        # --- END BUG FIX ---
 
                         # Only proceed if there is at least one active DU.
                         if active_du_set:
@@ -1083,7 +1111,7 @@ class PowerManager(xAppBase):
                     self.last_optimizer_run_time = now
                     with self.kpm_data_lock:
                         self.reports_received_this_interval.clear()
-                # --- End New Trigger Logic ---
+                # --- End Trigger Logic ---
 
                 if loop_start_time - self.last_stats_print_time >= self.stats_print_interval_s:
                     pkg_pwr_w, pkg_pwr_ok = self._get_pkg_power_w()
