@@ -433,7 +433,7 @@ class PowerManager(xAppBase):
     def _setup_intel_sst(self):
         self._log(INFO, "--- Configuring Intel SST-CP ---")
         try:
-            self._run_command(["intel-speed-select", "core-power", "enable"])
+            self._run_command(["intel-speed-select", "core-power", "enable", "-p", "1"])
             
             clos_min_freqs = self.config.get('clos_min_frequency', {}) or {}
             clos_max_freqs = self.config.get('clos_max_frequency', {}) or {}
