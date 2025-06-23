@@ -125,7 +125,7 @@ kpm_subscriptions:
 # ------------------------------------------------------------------------------
 # Absolute allowed range for the CPU package TDP limit in Watts.
 tdp_range:
-  min: 90
+  min: 100
   max: 185
 
 contextual_bandit:
