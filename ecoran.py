@@ -433,26 +433,36 @@ class PowerManager(xAppBase):
     def _setup_intel_sst(self):
         self._log(INFO, "--- Configuring Intel SST-CP ---")
         try:
-            self._run_command(["intel-speed-select", "core-power", "enable"]) 
-
-            # Set MINIMUM frequency per CLoS
-            for cid_key, freq_mhz_str in self.config.get('clos_min_frequency', {}).items():
-                try:
-                    freq_val = str(freq_mhz_str) 
-                    self._run_command(["intel-speed-select", "core-power", "config", "-c", str(cid_key), "--min", freq_val])
-                    self._log(INFO, f"SST-CP: Set CLOS {cid_key} min frequency to {freq_val} MHz.")
-                except Exception as e_clos_freq:
-                    self._log(ERROR, f"SST-CP: Failed to set min freq for CLOS {cid_key} to {freq_mhz_str}: {e_clos_freq}")
-
-            # Set MAXIMUM frequency per CLoS
-            for cid_key, freq_mhz_str in self.config.get('clos_max_frequency', {}).items():
-                try:
-                    freq_val = str(freq_mhz_str) 
-                    self._run_command(["intel-speed-select", "core-power", "config", "-c", str(cid_key), "--max", freq_val])
-                    self._log(INFO, f"SST-CP: Set CLOS {cid_key} max frequency to {freq_val} MHz.")
-                except Exception as e_clos_freq:
-                    self._log(ERROR, f"SST-CP: Failed to set max freq for CLOS {cid_key} to {freq_mhz_str}: {e_clos_freq}")
+            self._run_command(["intel-speed-select", "core-power", "enable"])
             
+            clos_min_freqs = self.config.get('clos_min_frequency', {}) or {}
+            clos_max_freqs = self.config.get('clos_max_frequency', {}) or {}
+            all_clos_ids = sorted(list(set(clos_min_freqs.keys()) | set(clos_max_freqs.keys())))
+
+            for cid_key in all_clos_ids:
+                try:
+                    min_freq = clos_min_freqs.get(cid_key)
+                    max_freq = clos_max_freqs.get(cid_key)
+
+                    cmd_parts = ["intel-speed-select", "core-power", "config", "-c", str(cid_key)]
+                    log_msg_parts = []
+
+                    if min_freq is not None:
+                        cmd_parts.extend(["--min", str(min_freq)])
+                        log_msg_parts.append(f"min freq to {min_freq} MHz")
+                    
+                    if max_freq is not None:
+                        cmd_parts.extend(["--max", str(max_freq)])
+                        log_msg_parts.append(f"max freq to {max_freq} MHz")
+                    
+                    self._run_command(cmd_parts)
+                    
+                    log_msg = f"SST-CP: Set CLOS {cid_key} " + ", ".join(log_msg_parts) + "."
+                    self._log(INFO, log_msg)
+
+                except Exception as e_clos_freq:
+                    self._log(ERROR, f"SST-CP: Failed to set freq for CLOS {cid_key}: {e_clos_freq}")
+
             ran_cores = {name: self._parse_core_list_string(str(core_list_str))
                          for name, core_list_str in self.config.get('ran_cores', {}).items()}
 
