@@ -39,8 +39,8 @@ ran_cores:
   cu0: "4"
   du0: "0,6,7,8"
   du1: "1,10,11,12"
-  du3: "2,14,15,16"
-  du4: "3,18,19,20,25-31"
+  du3: "2,14,15,16,21-24" # 21-24: iPerf3 servers 
+  du4: "3,18,19,20,25-31" # 25-31: idle CPUs
 
 # Mapping of DU component names (from ran_cores) to their gNB IDs for KPM.
 # This is the source of truth for which DUs the xApp will manage.
@@ -125,8 +125,8 @@ kpm_subscriptions:
 # ------------------------------------------------------------------------------
 # Absolute allowed range for the CPU package TDP limit in Watts.
 tdp_range:
-  min: 90
-  max: 170
+  min: 100
+  max: 180
 
 contextual_bandit:
   # Defines the discrete actions the agent can take (TDP change in Watts).
