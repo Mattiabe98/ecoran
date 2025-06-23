@@ -55,13 +55,13 @@ gnb_ids:
 # ------------------------------------------------------------------------------
 # Associates RAN components to SST-CP Classes of Service (CLOS).
 # Cores in 'ru_timing_cores' are automatically added to CLOS 0.
-clos_priority_scheme: ordered
+clos_priority_scheme: proportional # can be either proportional or ordered
 
 clos_weights:
   0: 15 # Highest priority CLoS
   1: 10
   2: 5
-  3: 1  # Lowest priority CLoS
+  3: 3  # Lowest priority CLoS
   
 clos_association:
   0: [cu0, du0] # High-priority: CU, a main DU, and timing-critical cores.
