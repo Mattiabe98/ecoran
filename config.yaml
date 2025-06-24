@@ -79,8 +79,8 @@ clos_min_frequency:
 clos_max_frequency:
   0: 3800 # Highest priority CLOS
   1: 3000
-  2: 2800
-  3: 2800 # Lowest priority CLOS
+  2: 2000
+  3: 1800 # Lowest priority CLOS
 
 # ------------------------------------------------------------------------------
 # Main Control Loop & PID Settings
