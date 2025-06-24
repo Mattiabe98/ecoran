@@ -64,10 +64,10 @@ clos_weights:
   3: 2  # Lowest priority CLoS
   
 clos_association:
-  0: [cu0, du0] # High-priority: CU, a main DU, and timing-critical cores.
-  1: [du1]
-  2: [du3]
-  3: [du4]
+  0: [cu0, du4] # High-priority: CU, a main DU, and timing-critical cores.
+  1: [du3]
+  2: [du1]
+  3: [du0]
 
 # Sets the guaranteed minimum CPU frequency (in MHz) for each CLOS.
 clos_min_frequency:
