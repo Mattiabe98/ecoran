@@ -37,13 +37,10 @@ rapl_path_base: "/sys/class/powercap/intel-rapl:0"
 # This is used for Intel SST-CP CLOS setup.
 ran_cores:
   cu0: "4"
-  du0: "0,6,7,8,9"
-  du1: "1,11,12,13,14"
-  du3: "2,16,17,18,19,25-28" # 21-24: iPerf3 servers 
-  du4: "3,21,22,23,24,29-31" # 25-31: idle CPUs
-
-ru_timing_cores: "5,10,15,20"
-
+  du0: "0,6,7,8"
+  du1: "1,10,11,12"
+  du3: "2,14,15,16,21-24" # 21-24: iPerf3 servers 
+  du4: "3,18,19,20,25-31" # 25-31: idle CPUs
 
 # Mapping of DU component names (from ran_cores) to their gNB IDs for KPM.
 # This is the source of truth for which DUs the xApp will manage.
@@ -95,6 +92,7 @@ main_loop_sleep_s: 1.0
 stats_print_interval_s: 10.0
 
 # Critical cores for the RU timing PID safety net.
+ru_timing_cores: "5,9,13,17"
 
 # Target CPU utilization percentage for the 'ru_timing_cores'. If exceeded, the PID acts.
 target_ru_timing_cpu_usage: 99.8
