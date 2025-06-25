@@ -66,10 +66,10 @@ clos_weights:
   3: 2  # Lowest priority CLoS
   
 clos_association:
-  0: [du0] # High-priority: CU, a main DU, and timing-critical cores.
+  0: [du0, cu0] # High-priority: CU, a main DU, and timing-critical cores.
   1: [du1]
   2: [du3]
-  3: [du4, cu0]
+  3: [du4]
 
 # Sets the guaranteed minimum CPU frequency (in MHz) for each CLOS.
 clos_min_frequency:
@@ -96,7 +96,7 @@ stats_print_interval_s: 10.0
 # Critical cores for the RU timing PID safety net.
 
 # Target CPU utilization percentage for the 'ru_timing_cores'. If exceeded, the PID acts.
-target_ru_timing_cpu_usage: 99.8
+target_ru_timing_cpu_usage: 98
 
 # Interval (in seconds) at which the RU Timing PID logic runs.
 ru_timing_pid_interval_s: 3.0
