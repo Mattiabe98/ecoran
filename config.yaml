@@ -37,10 +37,10 @@ rapl_path_base: "/sys/class/powercap/intel-rapl:0"
 # This is used for Intel SST-CP CLOS setup.
 ran_cores:
   cu0: "4,5,6,7" # 4 and 5 for UPF
-  du0: "3,24,25,26,27"
+  du0: "0,9,10,11,12"
   du1: "1,14,15,16,17"
   du3: "2,19,20,21,22"
-  du4: "0,9,10,11,12,28-31" # 28-31: idle CPUs
+  du4: "3,24,25,26,27,28-31" # 28-31: idle CPUs
 
 ru_timing_cores: "8,13,18,23"
 
