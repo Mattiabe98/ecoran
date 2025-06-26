@@ -901,6 +901,7 @@ class PowerManager(xAppBase):
         # --- Data Aggregation & Core Metric Calculation ---
         total_bits_optimizer_interval = sum(d.get('bits_sum_dl', 0.0) + d.get('bits_sum_ul', 0.0) for d in kpm_summed_data.values())
         self._log(DEBUG_ALL, f"Optimizer Cycle: Total bits for interval = {total_bits_optimizer_interval}")
+        avg_power_w_interval = (interval_energy_uj / 1e6) / interval_duration_s if interval_energy_uj and interval_duration_s > 0 else 0.0
         current_raw_efficiency = (total_bits_optimizer_interval / interval_energy_uj) if interval_energy_uj and interval_energy_uj > 1e-3 else 0.0
         
         dynamic_baseline = 1e-9
