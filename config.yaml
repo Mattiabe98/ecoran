@@ -96,7 +96,7 @@ stats_print_interval_s: 10.0
 # Critical cores for the RU timing PID safety net.
 
 # Target CPU utilization percentage for the 'ru_timing_cores'. If exceeded, the PID acts.
-target_ru_timing_cpu_usage: 99.8
+target_ru_timing_cpu_usage: 99
 
 # Interval (in seconds) at which the RU Timing PID logic runs.
 ru_timing_pid_interval_s: 3.0
