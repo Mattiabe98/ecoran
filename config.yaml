@@ -167,4 +167,4 @@ contextual_bandit:
   # Adjust these to match the expected operational range of your system.
   normalization_parameters:
     cpu_headroom: {'min': -5.0, 'max': 20.0}
-    num_active_ues: {'min': 0.0, 'max': 5.0} # Set to a reasonable max UE count for your network.
+    num_active_ues: {'min': 0.0, 'max': 4.0} # Set to a reasonable max UE count for your network.
