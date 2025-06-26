@@ -930,74 +930,100 @@ class PowerManager(xAppBase):
             is_workload_stable = False
             if pid_fired_this_interval: self._log(WARN, "Instability: PID triggered. Suppressing efficiency history update.")
             if is_cpu_stressed: self._log(WARN, f"Instability: CPU stressed ({current_ru_cpu_usage_control_val:.2f}%). Suppressing efficiency history update.")
-        
-        # In _perform_optimizer_cycle (replace from line ~1105 onwards)
-        
+
         # --- Reward Calculation ---
         action_delta_w = 0.0
         chosen_arm_key = "N/A"
         if self.last_selected_arm_index is not None:
             chosen_arm_key = self.arm_keys_ordered[self.last_selected_arm_index]
             action_delta_w = self.bandit_actions.get(chosen_arm_key, 0.0)
-        
+
         reward_for_bandit = 0.0
-        
-        # --- HIERARCHY 0: PID Trigger ---
-        # This remains the highest priority. If the system is unstable, that's the only lesson we learn.
-        if pid_fired_this_interval:
-            self.pid_triggered_since_last_decision = False
-            # As per our last fix, a moderate, consistent penalty for hitting the performance cliff.
-            reward_for_bandit = -0.25
-            self._log(WARN, f"CB REWARD: PID Triggered. Action '{chosen_arm_key}' found performance limit. Reward={self._colorize(f'{reward_for_bandit:.3f}', 'YELLOW')}")
-        
-        # --- HIERARCHY 1: Headroom-based Reward (The NEW Core Logic) ---
-        # This is for when the system is stable (no PID trigger).
-        else:
-            # Calculate the "wasteful gap" between the power limit and the actual power used.
-            previous_tdp_limit = self.last_action_actual_tdp if self.last_action_actual_tdp is not None else self.optimizer_target_tdp_w
-            
+        is_active_ue_present = current_num_active_ues > 0
+
+        # +++ START: NEW HEADROOM PENALTY/REWARD LOGIC +++
+        # This logic runs before the main reward calculation to add a headroom-based component.
+        headroom_reward_component = 0.0
+        # We can only calculate this if it's not the very first run.
+        if self.last_action_actual_tdp is not None and self.last_interval_avg_power_w > 0:
+            previous_tdp_limit = self.last_action_actual_tdp
             # Gap from the PREVIOUS state
             previous_headroom_w = max(0, previous_tdp_limit - self.last_interval_avg_power_w)
-            
             # Gap from the CURRENT state
             current_headroom_w = max(0, self.optimizer_target_tdp_w - avg_power_w_interval)
             
             # The change in wasted power. A negative value is good (headroom was reduced).
             headroom_delta = current_headroom_w - previous_headroom_w
-        
-            # Create a reward component based on this change.
-            # We use tanh to keep the reward bounded between -1 and 1.
-            # The scaling factor (e.g., 0.2) controls how aggressively we punish/reward.
-            headroom_reward_component = -np.tanh(headroom_delta * 0.2) # Note the negative sign
-        
-            # --- HIERARCHY 2: Performance-based Reward ---
-            # Only if there's an active workload do we care about performance.
-            performance_reward_component = 0.0
-            if is_active_ue_present:
-                # Calculate the change in efficiency, as before.
-                if self.last_raw_efficiency > 1e-9:
-                    raw_efficiency_change_pct = (current_raw_efficiency - self.last_raw_efficiency) / self.last_raw_efficiency
-                    performance_reward_component = np.tanh(raw_efficiency_change_pct * 5.0)
-                elif current_raw_efficiency > 1e-9:
-                    performance_reward_component = 0.5 # Bonus for starting work
-        
-            # --- Combine the components ---
-            # The final reward is a weighted sum. We care more about performance than just closing the gap.
-            # But the gap penalty will guide the agent when performance is flat.
-            reward_for_bandit = (0.7 * performance_reward_component) + (0.3 * headroom_reward_component)
+    
+            # If we increased the limit for no reason, headroom_delta will be positive. Punish it.
+            # If we decreased the limit successfully, headroom_delta will be negative. Reward it.
+            # This provides a direct incentive to close the gap.
+            # The scaling factor (0.05) makes it a gentle but firm nudge.
+            headroom_reward_component = -headroom_delta * 0.05
             
-            # Log the new components for debugging
-            self._log(INFO, f"CB Reward (Stable): PerfRw={performance_reward_component:+.3f}, "
-                            f"HeadroomRw={headroom_reward_component:+.3f} (GapΔ: {headroom_delta:+.1f}W) "
-                            f"=> Final Reward: {self._colorize(f'{reward_for_bandit:+.3f}', 'GREEN' if reward_for_bandit >= 0 else 'RED')}")
+            # We only apply this logic if the PID didn't fire, as the PID is a more critical event.
+            if not pid_fired_this_interval:
+                self._log(INFO, f"CB REWARD MOD: Headroom Δ={headroom_delta:+.1f}W. Applying reward component: {headroom_reward_component:+.3f}")
+                reward_for_bandit += headroom_reward_component
+        # +++ END: NEW HEADROOM PENALTY/REWARD LOGIC +++
         
-        # --- Final Adjustments & Clipping ---
+        # HIERARCHY 1: PID Trigger
+        if pid_fired_this_interval:
+            self.pid_triggered_since_last_decision = False
+            if action_delta_w <= 0:
+                reward_for_bandit = -0.4
+                self._log(WARN, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was wrong. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'RED')}")
+            else:
+                reward_for_bandit = 0.4
+                if is_active_ue_present:
+                    reward_for_bandit = max(current_normalized_efficiency - self.last_normalized_efficiency, 0.4)
+                self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying strong incentive. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
         
-        # Penalty for CPU stress (this is a good heuristic to keep)
-        if is_cpu_stressed and action_delta_w <= 0:
-            self._log(WARN, f"CB REWARD MOD: Stressed CPU at {current_ru_cpu_usage_control_val:.2f}%. Applying penalty of -0.3 to reward.")
-            reward_for_bandit -= 0.3
-        
+        # HIERARCHY 2: Normal Operation (Active or Idle)
+        elif is_active_ue_present:
+            # --- HYBRID REWARD V5: CONDITIONAL COMPOSITION ---
+            relative_reward_component = 0.0
+            absolute_reward_component = 0.0
+
+            if self.last_raw_efficiency > 1e-9:
+                raw_efficiency_change_pct = (current_raw_efficiency - self.last_raw_efficiency) / self.last_raw_efficiency
+                reward_shaping_factor = 5.0
+                relative_reward_component = np.tanh(raw_efficiency_change_pct * reward_shaping_factor)
+            elif current_raw_efficiency > 1e-9:
+                relative_reward_component = 0.5
+
+            # The absolute component is only a bonus for GOOD behavior
+            if relative_reward_component >= 0:
+                absolute_reward_component = (current_normalized_efficiency ** 2)
+                reward_for_bandit = (0.8 * relative_reward_component) + (0.2 * absolute_reward_component)
+            else:
+                # If efficiency got worse, the reward is ONLY the negative relative component. No bonus.
+                reward_for_bandit = relative_reward_component
+
+            # --- Detailed Logging ---
+            reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
+            colored_reward = self._colorize(f'{reward_for_bandit:+.3f}', reward_color)
+            self._log(INFO, f"CB Reward (Active): RawEff: {self.last_raw_efficiency:.3f} -> {current_raw_efficiency:.3f} | NormEff: {current_normalized_efficiency:.2f}")
+            self._log(INFO, f"                 -> Components: Relative={relative_reward_component:+.3f}, Absolute={absolute_reward_component:+.3f} => Final Reward: {colored_reward}")
+            
+            # Additive penalties still apply
+            if is_cpu_stressed and action_delta_w <= 0:
+                self._log(WARN, f"CB REWARD MOD: Stressed CPU at {current_ru_cpu_usage_control_val:.2f}%. Applying penalty of -0.3 to reward.")
+                reward_for_bandit -= 0.3
+        else: # Idle state logic
+            holding_zone_width_w = 5.0
+            if self.optimizer_target_tdp_w <= (self.tdp_min_w + holding_zone_width_w):
+                if action_delta_w == 0: reward_for_bandit = 0.2
+                elif action_delta_w < 0: reward_for_bandit = 0.05
+                else: reward_for_bandit = -0.4
+            else:
+                norm_tdp_excursion = (self.optimizer_target_tdp_w - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w) if (self.tdp_max_w > self.tdp_min_w) else 0
+                if action_delta_w < 0: reward_for_bandit = 0.2 + 0.3 * norm_tdp_excursion
+                elif action_delta_w == 0: reward_for_bandit = 0.0
+                else: reward_for_bandit = -0.3 - 0.2 * norm_tdp_excursion
+            reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
+            self._log(INFO, f"CB Reward (True Idle): Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
+
         # Penalty for Ineffective (Clipped) Actions
         if (self.last_action_requested_tdp is not None and 
             self.last_action_actual_tdp is not None and 
@@ -1009,12 +1035,11 @@ class PowerManager(xAppBase):
         # --- Finalize and Run Bandit ---
         reward_for_bandit = np.clip(reward_for_bandit, -1.0, 1.0)
         self.most_recent_calculated_reward_for_log = reward_for_bandit
-                
-        current_context_vec = self._get_current_context_vector(
-            current_num_active_ues, current_ru_cpu_usage_control_val, avg_power_w_interval, current_normalized_efficiency
-        )
         
-        # Call the original bandit step function. We always update now.
+        current_context_vec = self._get_current_context_vector(
+            current_num_active_ues, current_ru_cpu_usage_control_val, self.current_tdp_w, current_normalized_efficiency
+        )
+
         self._run_contextual_bandit_optimizer_step(reward_for_bandit, current_context_vec, significant_throughput_change)
         
         # --- Update State for Next Cycle ---
