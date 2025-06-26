@@ -989,6 +989,7 @@ class PowerManager(xAppBase):
                 # Using the stronger multiplier of 0.2
                 # Note the negative sign: a positive delta (worse) gives a negative reward.
                 headroom_reward_component = -np.tanh(headroom_delta * 0.2)
+                self._log(INFO, f"CB REWARD MOD: Headroom Δ={headroom_delta:+.1f}W. Applying reward component: {headroom_reward_component:+.3f}")
             
             # --- Combine Components ---
             # The final reward is a simple sum of the two components.
