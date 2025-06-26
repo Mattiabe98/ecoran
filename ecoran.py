@@ -960,7 +960,7 @@ class PowerManager(xAppBase):
             # If we decreased the limit successfully, headroom_delta will be negative. Reward it.
             # This provides a direct incentive to close the gap.
             # The scaling factor (0.05) makes it a gentle but firm nudge.
-            headroom_reward_component = -headroom_delta * 0.05
+            headroom_reward_component = -headroom_delta * 0.2
             
             # We only apply this logic if the PID didn't fire, as the PID is a more critical event.
             if not pid_fired_this_interval:
