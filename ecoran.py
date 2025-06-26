@@ -248,7 +248,7 @@ class PowerManager(xAppBase):
     def _get_current_context_vector(self,
                                        current_num_active_ues: int,
                                        current_ru_cpu_avg: float,
-                                       current_actual_tdp: float,
+                                       current_pkg_power_w: float, # Changed from current_actual_tdp
                                        normalized_efficiency: float 
                                        ) -> np.array:
         
@@ -262,7 +262,9 @@ class PowerManager(xAppBase):
         norm_params_cpu = self.norm_params.get('cpu_headroom', {'min': -5.0, 'max': 20.0})
         feature_2_cpu_headroom = _normalize(cpu_headroom, norm_params_cpu.get('min'), norm_params_cpu.get('max'))
     
-        feature_3_tdp_pos = _normalize(current_actual_tdp, self.tdp_min_w, self.tdp_max_w)
+        # The actual fix: Normalize based on ACTUAL power consumed, not the LIMIT.
+        # The range is still based on the TDP limits, as that defines the operational boundaries.
+        feature_3_power_pos = _normalize(current_pkg_power_w, self.tdp_min_w, self.tdp_max_w)
     
         norm_params_ues = self.norm_params.get('num_active_ues', {'min': 0.0, 'max': 10.0})
         feature_4_num_ues = _normalize(float(current_num_active_ues), norm_params_ues.get('min'), norm_params_ues.get('max'))
@@ -270,16 +272,16 @@ class PowerManager(xAppBase):
         final_features = np.array([
             feature_1_norm_eff,
             feature_2_cpu_headroom,
-            feature_3_tdp_pos,
+            feature_3_power_pos, # Use the new feature
             feature_4_num_ues
         ])
         
         self._log(DEBUG_ALL, f"Context Vector (Normalized): [Eff:{final_features[0]:.2f}, "
-                             f"CPU_Headroom:{final_features[1]:.2f}, TDP_Pos:{final_features[2]:.2f}, "
+                             f"CPU_Headroom:{final_features[1]:.2f}, Pwr_Pos:{final_features[2]:.2f}, " # Updated log
                              f"Num_UEs:{final_features[3]:.2f}]")
     
         return final_features
-    
+        
     def _setup_logging(self):
         self.file_verbosity_cfg = int(self.config.get('file_verbosity_level', DEBUG_KPM))
         self.log_file_path_base = self.config.get('log_file_path', "/mnt/data/ecoran")
@@ -1007,8 +1009,14 @@ class PowerManager(xAppBase):
         reward_for_bandit = np.clip(reward_for_bandit, -1.0, 1.0)
         self.most_recent_calculated_reward_for_log = reward_for_bandit
         
+        # Calculate the average power over the interval from the energy delta
+        avg_power_w_interval = (interval_energy_uj / 1e6) / interval_duration_s if interval_energy_uj and interval_duration_s > 0 else 0.0
+        
         current_context_vec = self._get_current_context_vector(
-            current_num_active_ues, current_ru_cpu_usage_control_val, self.current_tdp_w, current_normalized_efficiency
+            current_num_active_ues, 
+            current_ru_cpu_usage_control_val, 
+            avg_power_w_interval,  # <--- Pass actual average power
+            current_normalized_efficiency
         )
 
         self._run_contextual_bandit_optimizer_step(reward_for_bandit, current_context_vec, significant_throughput_change)
