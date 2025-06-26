@@ -1036,7 +1036,6 @@ class PowerManager(xAppBase):
         # Penalty for Ineffective (Clipped) Actions
         if (self.last_action_requested_tdp is not None and 
             self.last_action_actual_tdp is not None and 
-            action_delta_w > 0 and 
             abs(self.last_action_requested_tdp - self.last_action_actual_tdp) > 1e-3):
             self._log(WARN, f"CB REWARD: Ineffective Action, -0.25 penalty added. Requested {self.last_action_requested_tdp:.1f}W but clipped to {self.last_action_actual_tdp:.1f}W.")
             reward_for_bandit -= 0.25
