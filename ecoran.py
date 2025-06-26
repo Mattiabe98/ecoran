@@ -1006,6 +1006,7 @@ class PowerManager(xAppBase):
             # --- Combine Components ---
             # The final reward is a simple sum of the two components.
             reward_for_bandit = performance_reward_component + headroom_reward_component
+            reward_for_bandit = np.clip(reward_for_bandit, -1.0, 1.0)
             
             # --- Detailed Logging ---
             self._log(INFO, f"CB Reward (Active): RawEff: {self.last_raw_efficiency:.3f} -> {current_raw_efficiency:.3f} | NormEff: {current_normalized_efficiency:.2f}")
