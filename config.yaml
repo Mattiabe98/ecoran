@@ -73,7 +73,7 @@ clos_association:
 
 # Sets the guaranteed minimum CPU frequency (in MHz) for each CLOS.
 clos_min_frequency:
-  0: 2600 # Highest priority CLOS
+  0: 2800 # Highest priority CLOS
   1: 1800
   2: 1600
   3: 1600 # Lowest priority CLOS
