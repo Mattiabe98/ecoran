@@ -978,17 +978,29 @@ class PowerManager(xAppBase):
             else:
                 performance_reward_component = relative_reward_component
     
-            # --- Component 2: Headroom Reward (NEW PLACEMENT) ---
+            # --- Component 2: Headroom Reward (CORRECTED LOGIC) ---
             headroom_reward_component = 0.0
             if self.last_action_actual_tdp is not None and self.last_interval_avg_power_w > 0:
-                previous_tdp_limit = self.last_action_actual_tdp
+                
+                # This was the TDP that was active BEFORE the action we are scoring.
+                # We need to reconstruct it from the action we are scoring.
+                # self.last_action_actual_tdp IS the TDP after the action.
+                # So, the TDP before the action was self.last_action_actual_tdp - action_delta_w
+                previous_tdp_limit = self.last_action_actual_tdp - action_delta_w
+                
+                # This is the TDP that was active DURING the interval we just measured.
+                current_tdp_limit = self.last_action_actual_tdp
+    
+                # Gap from the PREVIOUS state
                 previous_headroom_w = max(0, previous_tdp_limit - self.last_interval_avg_power_w)
-                current_headroom_w = max(0, self.optimizer_target_tdp_w - avg_power_w_interval)
+                
+                # Gap from the CURRENT state
+                current_headroom_w = max(0, current_tdp_limit - avg_power_w_interval)
+                
                 headroom_delta = current_headroom_w - previous_headroom_w
                 
-                # Using the stronger multiplier of 0.2
-                # Note the negative sign: a positive delta (worse) gives a negative reward.
                 headroom_reward_component = -np.tanh(headroom_delta * 0.2)
+                
                 self._log(INFO, f"CB REWARD MOD: Headroom Δ={headroom_delta:+.1f}W. Applying reward component: {headroom_reward_component:+.3f}")
             
             # --- Combine Components ---
