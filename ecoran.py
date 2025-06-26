@@ -896,7 +896,7 @@ class PowerManager(xAppBase):
         kpm_summed_data, current_num_active_ues = self._get_and_reset_kpm_data_for_cycle(interval_duration_s)
         self.current_num_active_ues_for_log = current_num_active_ues
         
-        interval_energy_uj = self._get_interval_energy_for_optimizer()
+        interval_energy_uj = self._get_interval_energy_uj_for_optimizer()
     
         # --- Data Aggregation & Core Metric Calculation ---
         total_bits_optimizer_interval = sum(d.get('bits_sum_dl', 0.0) + d.get('bits_sum_ul', 0.0) for d in kpm_summed_data.values())
