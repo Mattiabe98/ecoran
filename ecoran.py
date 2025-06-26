@@ -209,7 +209,8 @@ class PowerManager(xAppBase):
         self.last_action_requested_tdp: Optional[float] = None
         self.last_raw_efficiency: float = 0.0
         self.last_normalized_efficiency: float = 0.0
-        
+
+        self.last_interval_avg_power_w: float = 0.0
         kpm_config = self.config.get('kpm_subscriptions', {})
         self.optimizer_reports_per_du = int(kpm_config.get('optimizer_reports_per_du', 10))
         self.optimizer_max_interval_s = float(kpm_config.get('optimizer_max_interval_s', self.optimizer_decision_interval_s * 1.5))
@@ -590,10 +591,13 @@ class PowerManager(xAppBase):
     
     def _run_contextual_bandit_optimizer_step(self, current_reward_for_bandit: Optional[float],
                                              current_context_vector: Optional[np.array],
-                                             significant_throughput_change: bool):
+                                             significant_throughput_change: bool, 
+                                             should_update_model: bool):
         # 1. Update bandit with the reward from the PREVIOUS action
         if self.last_selected_arm_index is not None and self.last_context_vector is not None:
-            if significant_throughput_change:
+            if not should_update_model:
+                self._log(INFO, "CB Lib: Skipping update as action was a no-op.")
+            elif significant_throughput_change:
                 self._log(WARN, f"CB Lib: Skipping update for arm_idx '{self.last_selected_arm_index}' due to sig. throughput change.")
             elif current_reward_for_bandit is not None and math.isfinite(current_reward_for_bandit):
                 try:
@@ -938,64 +942,77 @@ class PowerManager(xAppBase):
             action_delta_w = self.bandit_actions.get(chosen_arm_key, 0.0)
 
         reward_for_bandit = 0.0
+        should_update_bandit = True
         is_active_ue_present = current_num_active_ues > 0
 
-        # HIERARCHY 1: PID Trigger
-        if pid_fired_this_interval:
-            self.pid_triggered_since_last_decision = False
-            if action_delta_w <= 0:
-                reward_for_bandit = -0.4
-                self._log(WARN, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was wrong. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'RED')}")
-            else:
-                reward_for_bandit = 0.4
-                if is_active_ue_present:
-                    reward_for_bandit = max(current_normalized_efficiency - self.last_normalized_efficiency, 0.4)
-                self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying strong incentive. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
+        # --- HIERARCHY 0: NO-OP (Meaningless Action) DETECTION ---
+        power_headroom_buffer_w = 5.0
+        previous_tdp_limit = self.last_action_actual_tdp if self.last_action_actual_tdp is not None else self.optimizer_target_tdp_w
+
+        if (action_delta_w > 0) and (self.last_interval_avg_power_w < (previous_tdp_limit - power_headroom_buffer_w)):
+            # The action was to INCREASE TDP, but power draw was already well below the PREVIOUS limit.
+            # This action had no effect on the system's physics. Do not learn from it.
+            self._log(WARN, f"CB REWARD: NO-OP. Ignored TDP increase. PkgPwr ({self.last_interval_avg_power_w:.1f}W) was not constrained by previous limit ({previous_tdp_limit:.1f}W).")
+            reward_for_bandit = 0.0  # Assign a neutral reward
+            should_update_bandit = False # CRITICAL: Do not update the model
         
-        # HIERARCHY 2: Normal Operation (Active or Idle)
-        elif is_active_ue_present:
-            # --- HYBRID REWARD V5: CONDITIONAL COMPOSITION ---
-            relative_reward_component = 0.0
-            absolute_reward_component = 0.0
-
-            if self.last_raw_efficiency > 1e-9:
-                raw_efficiency_change_pct = (current_raw_efficiency - self.last_raw_efficiency) / self.last_raw_efficiency
-                reward_shaping_factor = 5.0
-                relative_reward_component = np.tanh(raw_efficiency_change_pct * reward_shaping_factor)
-            elif current_raw_efficiency > 1e-9:
-                relative_reward_component = 0.5
-
-            # The absolute component is only a bonus for GOOD behavior
-            if relative_reward_component >= 0:
-                absolute_reward_component = (current_normalized_efficiency ** 2)
-                reward_for_bandit = (0.8 * relative_reward_component) + (0.2 * absolute_reward_component)
-            else:
-                # If efficiency got worse, the reward is ONLY the negative relative component. No bonus.
-                reward_for_bandit = relative_reward_component
-
-            # --- Detailed Logging ---
-            reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
-            colored_reward = self._colorize(f'{reward_for_bandit:+.3f}', reward_color)
-            self._log(INFO, f"CB Reward (Active): RawEff: {self.last_raw_efficiency:.3f} -> {current_raw_efficiency:.3f} | NormEff: {current_normalized_efficiency:.2f}")
-            self._log(INFO, f"                 -> Components: Relative={relative_reward_component:+.3f}, Absolute={absolute_reward_component:+.3f} => Final Reward: {colored_reward}")
+        else:
+        # HIERARCHY 1: PID Trigger
+            if pid_fired_this_interval:
+                self.pid_triggered_since_last_decision = False
+                if action_delta_w <= 0:
+                    reward_for_bandit = -0.4
+                    self._log(WARN, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was wrong. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'RED')}")
+                else:
+                    reward_for_bandit = 0.4
+                    if is_active_ue_present:
+                        reward_for_bandit = max(current_normalized_efficiency - self.last_normalized_efficiency, 0.4)
+                    self._log(INFO, f"CB REWARD: PID TRIGGER OVERRIDE. Action '{chosen_arm_key}' was correct. Applying strong incentive. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', 'GREEN')}")
             
-            # Additive penalties still apply
-            if is_cpu_stressed and action_delta_w <= 0:
-                self._log(WARN, f"CB REWARD MOD: Stressed CPU at {current_ru_cpu_usage_control_val:.2f}%. Applying penalty of -0.3 to reward.")
-                reward_for_bandit -= 0.3
-        else: # Idle state logic
-            holding_zone_width_w = 5.0
-            if self.optimizer_target_tdp_w <= (self.tdp_min_w + holding_zone_width_w):
-                if action_delta_w == 0: reward_for_bandit = 0.2
-                elif action_delta_w < 0: reward_for_bandit = 0.05
-                else: reward_for_bandit = -0.4
-            else:
-                norm_tdp_excursion = (self.optimizer_target_tdp_w - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w) if (self.tdp_max_w > self.tdp_min_w) else 0
-                if action_delta_w < 0: reward_for_bandit = 0.2 + 0.3 * norm_tdp_excursion
-                elif action_delta_w == 0: reward_for_bandit = 0.0
-                else: reward_for_bandit = -0.3 - 0.2 * norm_tdp_excursion
-            reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
-            self._log(INFO, f"CB Reward (True Idle): Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
+            # HIERARCHY 2: Normal Operation (Active or Idle)
+            elif is_active_ue_present:
+                # --- HYBRID REWARD V5: CONDITIONAL COMPOSITION ---
+                relative_reward_component = 0.0
+                absolute_reward_component = 0.0
+    
+                if self.last_raw_efficiency > 1e-9:
+                    raw_efficiency_change_pct = (current_raw_efficiency - self.last_raw_efficiency) / self.last_raw_efficiency
+                    reward_shaping_factor = 5.0
+                    relative_reward_component = np.tanh(raw_efficiency_change_pct * reward_shaping_factor)
+                elif current_raw_efficiency > 1e-9:
+                    relative_reward_component = 0.5
+    
+                # The absolute component is only a bonus for GOOD behavior
+                if relative_reward_component >= 0:
+                    absolute_reward_component = (current_normalized_efficiency ** 2)
+                    reward_for_bandit = (0.8 * relative_reward_component) + (0.2 * absolute_reward_component)
+                else:
+                    # If efficiency got worse, the reward is ONLY the negative relative component. No bonus.
+                    reward_for_bandit = relative_reward_component
+    
+                # --- Detailed Logging ---
+                reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
+                colored_reward = self._colorize(f'{reward_for_bandit:+.3f}', reward_color)
+                self._log(INFO, f"CB Reward (Active): RawEff: {self.last_raw_efficiency:.3f} -> {current_raw_efficiency:.3f} | NormEff: {current_normalized_efficiency:.2f}")
+                self._log(INFO, f"                 -> Components: Relative={relative_reward_component:+.3f}, Absolute={absolute_reward_component:+.3f} => Final Reward: {colored_reward}")
+                
+                # Additive penalties still apply
+                if is_cpu_stressed and action_delta_w <= 0:
+                    self._log(WARN, f"CB REWARD MOD: Stressed CPU at {current_ru_cpu_usage_control_val:.2f}%. Applying penalty of -0.3 to reward.")
+                    reward_for_bandit -= 0.3
+            else: # Idle state logic
+                holding_zone_width_w = 5.0
+                if self.optimizer_target_tdp_w <= (self.tdp_min_w + holding_zone_width_w):
+                    if action_delta_w == 0: reward_for_bandit = 0.2
+                    elif action_delta_w < 0: reward_for_bandit = 0.05
+                    else: reward_for_bandit = -0.4
+                else:
+                    norm_tdp_excursion = (self.optimizer_target_tdp_w - self.tdp_min_w) / (self.tdp_max_w - self.tdp_min_w) if (self.tdp_max_w > self.tdp_min_w) else 0
+                    if action_delta_w < 0: reward_for_bandit = 0.2 + 0.3 * norm_tdp_excursion
+                    elif action_delta_w == 0: reward_for_bandit = 0.0
+                    else: reward_for_bandit = -0.3 - 0.2 * norm_tdp_excursion
+                reward_color = 'GREEN' if reward_for_bandit >= 0 else 'RED'
+                self._log(INFO, f"CB Reward (True Idle): Action '{chosen_arm_key}'. Final Reward={self._colorize(f'{reward_for_bandit:.3f}', reward_color)}")
 
         # Penalty for Ineffective (Clipped) Actions
         if (self.last_action_requested_tdp is not None and 
@@ -1026,7 +1043,7 @@ class PowerManager(xAppBase):
         self.last_raw_efficiency = current_raw_efficiency
         self.last_normalized_efficiency = current_normalized_efficiency
         self.total_bits_from_previous_optimizer_interval = total_bits_optimizer_interval
-
+        self.last_interval_avg_power_w = avg_power_w_interval
     @xAppBase.start_function
     def run_power_management_xapp(self):
         if os.geteuid() != 0 and not self.dry_run:
