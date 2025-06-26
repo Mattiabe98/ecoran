@@ -80,8 +80,8 @@ clos_min_frequency:
 
 clos_max_frequency:
   0: 3500 # Highest priority CLOS
-  1: 2400
-  2: 2200
+  1: 2600
+  2: 2400
   3: 1900 # Lowest priority CLOS
 
 # ------------------------------------------------------------------------------
