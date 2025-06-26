@@ -1036,7 +1036,7 @@ class PowerManager(xAppBase):
             current_normalized_efficiency
         )
 
-        self._run_contextual_bandit_optimizer_step(reward_for_bandit, current_context_vec, significant_throughput_change)
+        self._run_contextual_bandit_optimizer_step(reward_for_bandit, current_context_vec, significant_throughput_change, should_update_bandit)
         
         # --- Update State for Next Cycle ---
         if is_workload_stable: self.stable_efficiency_history.append(current_raw_efficiency)
